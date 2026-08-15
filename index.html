@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BruceClaw</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, sans-serif; background: #0f0f13; color: #fff; height: 100vh; display: flex; flex-direction: column; }
+.header { background: #16213e; padding: 15px; text-align: center; border-bottom: 2px solid #f97316; }
+.header h1 { color: #f97316; font-size: 20px; }
+.header .status { color: #22c55e; font-size: 12px; margin-top: 4px; }
+.chat { flex: 1; overflow-y: auto; padding: 15px; }
+.message { margin-bottom: 12px; padding: 10px 14px; border-radius: 12px; max-width: 85%; font-size: 14px; line-height: 1.5; }
+.user { background: #f97316; color: #fff; margin-left: auto; border-bottom-right-radius: 4px; }
+.bot { background: #1c1c27; color: #e0e0e0; border-bottom-left-radius: 4px; }
+.input-area { display: flex; padding: 10px; background: #16213e; gap: 8px; }
+.input-area input { flex: 1; background: #1c1c27; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 8px; font-size: 14px; }
+.input-area button { background: #f97316; color: #fff; border: none; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: bold; }
+.typing { color: #888; font-style: italic; padding: 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="header">
+<h1>BruceClaw</h1>
+<div class="status">Connected to OpenClaw</div>
+</div>
+<div class="chat" id="chat">
+<div class="message bot">Hey! I'm BruceClaw. Ask me anything.</div>
+</div>
+<div class="input-area">
+<input type="text" id="input" placeholder="Type a message..." autofocus>
+<button onclick="send()">Send</button>
+</div>
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+
+function addMessage(text, isUser) {
+  const div = document.createElement('div');
+  div.className = 'message ' + (isUser ? 'user' : 'bot');
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function send() {
+  const msg = input.value.trim();
+  if (!msg) return;
+  addMessage(msg, true);
+  input.value = '';
+  
+  addMessage('Thinking...', false);
+  
+  fetch('/api/chat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message: msg})
+  })
+  .then(r => r.json())
+  .then(data => {
+    chat.removeChild(chat.lastChild);
+    addMessage(data.reply || data.error || 'No response', false);
+  })
+  .catch(err => {
+    chat.removeChild(chat.lastChild);
+    addMessage('Error: ' + err.message, false);
+  });
+}
+
+input.addEventListener('keypress', e => {
+  if (e.key === 'Enter') send();
+});
+</script>
+</body>
+</html>
