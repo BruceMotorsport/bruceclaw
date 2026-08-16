@@ -318,6 +318,35 @@ class H(http.server.BaseHTTPRequestHandler):
                 lines = r.stdout.strip().split("\n")
                 result = lines[1] if len(lines) > 1 else "N/A"
 
+            # ======== WHATSAPP ========
+            elif any(x in msg for x in ["whatsapp ","whatsapp message","send whatsapp","message on whatsapp"]):
+                number = ""; text = "Hi"
+                # Extract number
+                for sep in ["to ","whatsapp ","message ","send "]:
+                    if sep in msg:
+                        after = msg.split(sep)[-1].strip()
+                        parts = after.split(None, 1)
+                        number = parts[0].replace(" ","").replace("-","").replace("+","").replace("whatsapp","")
+                        if len(parts) > 1:
+                            raw = parts[1]
+                            for kw in ["say ","message ","and say ","and tell ","on whatsapp"]:
+                                raw = raw.replace(kw,"")
+                            text = raw.strip() or "Hi"
+                        break
+                if not number:
+                    # Try to extract any phone number from the message
+                    import re
+                    nums = re.findall(r'0\d{9}', msg)
+                    if nums:
+                        number = nums[0]
+                if number:
+                    # Use Android intent to open WhatsApp with pre-filled message
+                    url = f"https://wa.me/{number}?text={text.replace(' ','%20')}"
+                    subprocess.run(["am","start","-a","android.intent.action.VIEW","-d",url], capture_output=True, text=True, timeout=5)
+                    result = f"Opening WhatsApp to {number} with: {text}"
+                else:
+                    result = "Give me a phone number and message for WhatsApp"
+
             # ======== OPEN APP ========
             elif any(x in msg for x in ["open ","launch ","start app"]):
                 app = msg.replace("open","").replace("launch","").replace("start app","").strip()
@@ -452,6 +481,7 @@ Volume: up/down/mute
 Brightness: dim/bright
 Vibrate
 Storage: space
+WhatsApp: send messages
 Open apps
 Files/Shell
 Calendar/Events
