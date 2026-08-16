@@ -260,7 +260,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
     
     def do_POST(self):
-        if self.path in ["/api/chat", "/v1/chat/completions"]:
+        print(f"POST: {self.path}")
+        if "/chat" in self.path or self.path == "/api/chat":
             body = self.read_body()
             message = body.get("message", "")
             reply = self.agent.process(message)
