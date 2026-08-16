@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""BruceClaw Bridge v4 - ALL telephony/device functions"""
-import socketserver, http.server, json, subprocess, os, time
+"""BruceClaw Bridge v5 - ALL functions + Answering Machine"""
+import socketserver, http.server, json, subprocess, os, time, threading
 from pathlib import Path
 
 PORT = 9999
 HOME = Path(os.path.expanduser("~"))
+MESSAGES_DIR = HOME / "bruceclaw_messages"
+MESSAGES_DIR.mkdir(exist_ok=True)
+
+# Answering machine state
+answering_machine = {
+    "enabled": False,
+    "greeting": "Hello, Bruce is unavailable right now. Please leave your name, number, and message after the beep. I'll get back to you soon.",
+    "max_wait": 30,
+    "messages": []
+}
 
 class FastServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
@@ -18,7 +28,8 @@ class H(http.server.BaseHTTPRequestHandler):
                      "location","camera","screenshot","clipboard","notify",
                      "tts","volume","brightness","vibrate","ringtone",
                      "storage","install","files","shell","calendar",
-                     "open_app","wallpaper","media","screen"]
+                     "open_app","wallpaper","media","screen",
+                     "answering_machine","voicemail","messages"]
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
@@ -371,6 +382,58 @@ class H(http.server.BaseHTTPRequestHandler):
                 subprocess.run(["pkg","install","-y",pkg], capture_output=True, text=True, timeout=60)
                 result = f"{pkg} installed"
 
+            # ======== ANSWERING MACHINE ========
+            elif any(x in msg for x in ["answering machine on","enable answering machine","voicemail on","answer calls on"]):
+                answering_machine["enabled"] = True
+                subprocess.run(["termux-notification","-t","BruceClaw","-c","Answering machine ON - calls will be auto-answered","--id","am-status"], timeout=3)
+                result = "Answering machine ENABLED. Incoming calls will be auto-answered with your greeting."
+
+            elif any(x in msg for x in ["answering machine off","disable answering machine","voicemail off","answer calls off","stop answering"]):
+                answering_machine["enabled"] = False
+                subprocess.run(["termux-notification-remove","--id","am-status"], timeout=3)
+                result = "Answering machine DISABLED."
+
+            elif any(x in msg for x in ["set greeting","change greeting","record greeting","set voicemail message"]):
+                text = ""
+                for sep in ["set greeting ","change greeting ","record greeting ","set voicemail message "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    answering_machine["greeting"] = text
+                    result = f"Greeting updated: {text}"
+                else:
+                    result = f"Current greeting: {answering_machine['greeting']}\n\nTo change, say: set greeting [your message]"
+
+            elif any(x in msg for x in ["answering machine status","voicemail status","is answering machine on"]):
+                status = "ON" if answering_machine["enabled"] else "OFF"
+                count = len(answering_machine["messages"])
+                result = f"Answering machine: {status}\nGreeting: {answering_machine['greeting'][:80]}...\nMessages: {count}"
+
+            elif any(x in msg for x in ["check messages","voicemail","my messages","any messages","did anyone call"]):
+                msgs = answering_machine["messages"]
+                if msgs:
+                    lines = []
+                    for m in msgs[-10:]:
+                        lines.append(f"[{m['time']}] {m['number']}: {m.get('note','no note')}")
+                    result = f"Messages ({len(msgs)} total):\n" + "\n".join(lines)
+                else:
+                    result = "No messages"
+
+            elif any(x in msg for x in ["clear messages","delete messages","clear voicemail"]):
+                answering_machine["messages"] = []
+                for f in MESSAGES_DIR.glob("call_*.json"):
+                    f.unlink()
+                result = "All messages cleared"
+
+            elif any(x in msg for x in ["add note","note for","caller note"]):
+                text = msg.replace("add note","").replace("note for","").replace("caller note","").strip()
+                if answering_machine["messages"]:
+                    answering_machine["messages"][-1]["note"] = text
+                    result = f"Note added to last message: {text}"
+                else:
+                    result = "No messages to add a note to"
+
             # ======== HELP ========
             elif any(x in msg for x in ["help","what can","tools","capabilities","functions"]):
                 result = """SMS: send/read
@@ -391,7 +454,8 @@ Vibrate
 Storage: space
 Open apps
 Files/Shell
-Calendar/Events"""
+Calendar/Events
+Answering Machine: on/off/greeting/messages"""
 
             else:
                 result = "I can do: SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, files, calendar. What do you need?"
@@ -421,5 +485,61 @@ Calendar/Events"""
 
     def log_message(self,*a): pass
 
-print(f"BruceClaw Bridge v4 at http://localhost:{PORT}")
+
+def call_monitor():
+    """Background thread - monitors incoming calls when answering machine is ON"""
+    last_state = "idle"
+    while True:
+        time.sleep(3)
+        if not answering_machine["enabled"]:
+            last_state = "idle"
+            continue
+        try:
+            r = subprocess.run(["termux-telephony-deviceinfo"], capture_output=True, text=True, timeout=3)
+            # Check call state via dumpsys
+            r2 = subprocess.run(["dumpsys","telephony.registry"], capture_output=True, text=True, timeout=3)
+            state_line = [l for l in r2.stdout.split("\n") if "mCallState" in l]
+            if state_line:
+                call_state = state_line[0].strip()
+                if "mCallState=2" in call_state and last_state != "ringing":
+                    # Incoming call detected - answer it
+                    last_state = "ringing"
+                    print("INCOMING CALL DETECTED - Answering...")
+                    subprocess.run(["input","keyevent","5"], timeout=5)  # Answer
+                    time.sleep(2)
+                    # Play greeting via TTS
+                    subprocess.run(["termux-tts-speak", answering_machine["greeting"]], timeout=15)
+                    # Beep sound
+                    subprocess.run(["termux-tts-speak","Beep"], timeout=3)
+                    # Wait for caller to leave message
+                    time.sleep(answering_machine["max_wait"])
+                    # Hang up
+                    subprocess.run(["input","keyevent","6"], timeout=5)
+                    # Log the call
+                    from datetime import datetime
+                    msg = {
+                        "number": "unknown",
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "note": "auto-answered, greeting played",
+                        "duration": answering_machine["max_wait"]
+                    }
+                    answering_machine["messages"].append(msg)
+                    # Save to file
+                    fname = MESSAGES_DIR / f"call_{int(time.time())}.json"
+                    with open(fname, "w") as f:
+                        json.dump(msg, f)
+                    # Notify Bruce
+                    subprocess.run(["termux-notification","-t","BruceClaw","-c",f"Missed call logged from {msg['number']} at {msg['time']}","--id","am-call"], timeout=3)
+                    last_state = "idle"
+                elif "mCallState=0" in call_state:
+                    last_state = "idle"
+        except:
+            last_state = "idle"
+
+
+# Start call monitor thread
+monitor = threading.Thread(target=call_monitor, daemon=True)
+monitor.start()
+
+print(f"BruceClaw Bridge v5 at http://localhost:{PORT}")
 FastServer(("0.0.0.0",PORT),H).serve_forever()
