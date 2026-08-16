@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bruce Racing Telemetry</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',sans-serif;background:#0a0a0a;color:#fff;min-height:100vh}
+.header{background:linear-gradient(135deg,#1a1a2e,#16213e);padding:20px;text-align:center;border-bottom:3px solid #ff6b00}
+.header h1{font-size:28px;color:#ff6b00;text-transform:uppercase;letter-spacing:2px}
+.header p{color:#888;font-size:14px;margin-top:5px}
+.dashboard{display:grid;grid-template-columns:1fr 1fr;gap:15px;padding:15px;max-width:1200px;margin:0 auto}
+.card{background:#1a1a2e;border-radius:12px;padding:20px;border:1px solid #333}
+.card h2{color:#ff6b00;font-size:16px;margin-bottom:15px;text-transform:uppercase;letter-spacing:1px}
+.stat{display:flex;justify-content:space-between;margin:10px 0;padding:10px;background:#0d1117;border-radius:8px}
+.stat-label{color:#888;font-size:14px}
+.stat-value{color:#00ff88;font-size:20px;font-weight:bold}
+.stat-value.warning{color:#ffaa00}
+.stat-value.danger{color:#ff4444}
+.chart-container{height:200px;margin-top:10px}
+.input-section{grid-column:1/-1;background:#1a1a2e;border-radius:12px;padding:20px;border:1px solid #333}
+.input-section h2{color:#ff6b00;margin-bottom:15px}
+.input-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px}
+.input-group{display:flex;flex-direction:column;gap:5px}
+.input-group label{color:#888;font-size:12px;text-transform:uppercase}
+.input-group input{background:#0d1117;border:1px solid #333;color:#fff;padding:10px;border-radius:6px;font-size:16px}
+.btn{background:#ff6b00;color:#fff;border:none;padding:12px 24px;border-radius:8px;font-size:16px;cursor:pointer;text-transform:uppercase;font-weight:bold}
+.btn:hover{background:#ff8533}
+.btn:active{transform:scale(0.98)}
+.gforce-display{grid-column:1/-1;text-align:center;padding:30px;background:linear-gradient(135deg,#1a1a2e,#0d1117);border-radius:12px;border:2px solid #ff6b00}
+.gforce-big{font-size:72px;font-weight:bold;color:#00ff88}
+.gforce-label{font-size:18px;color:#888;margin-top:10px}
+.gforce-arrow{font-size:48px;color:#ff6b00}
+.full-width{grid-column:1/-1}
+@media(max-width:600px){.dashboard{grid-template-columns:1fr}.gforce-big{font-size:48px}}
+</style>
+</head>
+<body>
+<div class="header">
+<h1>🏎️ Bruce Racing Telemetry</h1>
+<p>AI-Powered Vehicle Monitoring</p>
+</div>
+
+<div class="dashboard">
+<!-- Car Specs Input -->
+<div class="input-section" id="specs-section">
+<h2>🚗 Vehicle Specifications</h2>
+<div class="input-grid">
+<div class="input-group">
+<label>Vehicle Name</label>
+<input type="text" id="carName" value="Ford Escort 1973" placeholder="e.g. Ford Escort">
+</div>
+<div class="input-group">
+<label>Curb Weight (kg)</label>
+<input type="number" id="curbWeight" value="1050" placeholder="e.g. 1050">
+</div>
+<div class="input-group">
+<label>Wheelbase (mm)</label>
+<input type="number" id="wheelbase" value="2410" placeholder="e.g. 2410">
+</div>
+<div class="input-group">
+<label>Tire Width (mm)</label>
+<input type="number" id="tireWidth" value="185" placeholder="e.g. 185">
+</div>
+<div class="input-group">
+<label>Tire Aspect Ratio (%)</label>
+<input type="number" id="tireAspect" value="60" placeholder="e.g. 60">
+</div>
+<div class="input-group">
+<label>Rim Diameter (inches)</label>
+<input type="number" id="rimDiameter" value="13" placeholder="e.g. 13">
+</div>
+<div class="input-group">
+<label>Gear Ratios (comma separated)</label>
+<input type="text" id="gearRatios" value="3.18, 1.84, 1.26, 0.93" placeholder="e.g. 3.18, 1.84, 1.26, 0.93">
+</div>
+<div class="input-group">
+<label>Final Drive Ratio</label>
+<input type="number" id="finalDrive" value="3.89" step="0.01" placeholder="e.g. 3.89">
+</div>
+<div class="input-group">
+<label>Engine Power (HP)</label>
+<input type="number" id="engineHP" value="110" placeholder="e.g. 110">
+</div>
+<div class="input-group">
+<label>Peak Torque (Nm)</label>
+<input type="number" id="peakTorque" value="160" placeholder="e.g. 160">
+</div>
+</div>
+<br>
+<button class="btn" onclick="saveSpecs()">💾 Save Specs & Calculate</button>
+</div>
+
+<!-- G-Force Display -->
+<div class="gforce-display">
+<div class="gforce-arrow" id="gforceArrow">⬆️</div>
+<div class="gforce-big" id="gforceValue">0.00</div>
+<div class="gforce-label">G-FORCE (LONGITUDINAL)</div>
+<div style="margin-top:10px;color:#666;font-size:14px">
+Lateral: <span id="gforceLateral" style="color:#ff6b00">0.00</span>G &nbsp;|&nbsp;
+Combined: <span id="gforceCombined" style="color:#00ff88">0.00</span>G
+</div>
+</div>
+
+<!-- Live Stats -->
+<div class="card">
+<h2>📊 Live Data</h2>
+<div class="stat">
+<span class="stat-label">Speed</span>
+<span class="stat-value" id="speed">0 km/h</span>
+</div>
+<div class="stat">
+<span class="stat-label">RPM</span>
+<span class="stat-value" id="rpm">0</span>
+</div>
+<div class="stat">
+<span class="stat-label">Gear</span>
+<span class="stat-value" id="gear">N</span>
+</div>
+<div class="stat">
+<span class="stat-label">Throttle</span>
+<span class="stat-value" id="throttle">0%</span>
+</div>
+</div>
+
+<!-- Calculated Power -->
+<div class="card">
+<h2>⚡ Power & Torque</h2>
+<div class="stat">
+<span class="stat-label">Current HP</span>
+<span class="stat-value" id="currentHP">0 HP</span>
+</div>
+<div class="stat">
+<span class="stat-label">Current Torque</span>
+<span class="stat-value" id="currentTorque">0 Nm</span>
+</div>
+<div class="stat">
+<span class="stat-label">Wheel Torque</span>
+<span class="stat-value" id="wheelTorque">0 Nm</span>
+</div>
+<div class="stat">
+<span class="stat-label">Acceleration</span>
+<span class="stat-value" id="accel">0 m/s²</span>
+</div>
+</div>
+
+<!-- G-Force Chart -->
+<div class="card full-width">
+<h2>📈 G-Force History</h2>
+<div class="chart-container">
+<canvas id="gforceChart"></canvas>
+</div>
+</div>
+
+<!-- Power Curve -->
+<div class="card full-width">
+<h2>⚡ Power/Torque Curve</h2>
+<div class="chart-container">
+<canvas id="powerChart"></canvas>
+</div>
+</div>
+</div>
+
+<script>
+// Car specs
+let specs = {
+name: 'Ford Escort 1973',
+curbWeight: 1050,
+wheelbase: 2410,
+tireWidth: 185,
+tireAspect: 60,
+rimDiameter: 13,
+gearRatios: [3.18, 1.84, 1.26, 0.93],
+finalDrive: 3.89,
+engineHP: 110,
+peakTorque: 160
+};
+
+// Load saved specs
+if (localStorage.getItem('bruceSpecs')) {
+specs = JSON.parse(localStorage.getItem('bruceSpecs'));
+document.getElementById('carName').value = specs.name;
+document.getElementById('curbWeight').value = specs.curbWeight;
+document.getElementById('wheelbase').value = specs.wheelbase;
+document.getElementById('tireWidth').value = specs.tireWidth;
+document.getElementById('tireAspect').value = specs.tireAspect;
+document.getElementById('rimDiameter').value = specs.rimDiameter;
+document.getElementById('gearRatios').value = specs.gearRatios.join(', ');
+document.getElementById('finalDrive').value = specs.finalDrive;
+document.getElementById('engineHP').value = specs.engineHP;
+document.getElementById('peakTorque').value = specs.peakTorque;
+}
+
+function saveSpecs() {
+specs = {
+name: document.getElementById('carName').value,
+curbWeight: parseFloat(document.getElementById('curbWeight').value),
+wheelbase: parseFloat(document.getElementById('wheelbase').value),
+tireWidth: parseFloat(document.getElementById('tireWidth').value),
+tireAspect: parseFloat(document.getElementById('tireAspect').value),
+rimDiameter: parseFloat(document.getElementById('rimDiameter').value),
+gearRatios: document.getElementById('gearRatios').value.split(',').map(x => parseFloat(x.trim())),
+finalDrive: parseFloat(document.getElementById('finalDrive').value),
+engineHP: parseFloat(document.getElementById('engineHP').value),
+peakTorque: parseFloat(document.getElementById('peakTorque').value)
+};
+localStorage.setItem('bruceSpecs', JSON.stringify(specs));
+alert('Specs saved!');
+}
+
+// Calculate tire diameter
+function getTireDiameter() {
+let sidewall = specs.tireWidth * (specs.tireAspect / 100);
+return (specs.rimDiameter * 25.4) + (2 * sidewall);
+}
+
+// Calculate speed from RPM and gear
+function rpmToSpeed(rpm, gear) {
+if (gear < 0 || gear >= specs.gearRatios.length) return 0;
+let tireCircumference = Math.PI * getTireDiameter();
+let gearRatio = specs.gearRatios[gear] * specs.finalDrive;
+let tireRPM = rpm / gearRatio;
+return (tireCircumference * tireRPM * 60) / 1000000;
+}
+
+// Calculate torque at wheels
+function getWheelTorque(rpm, gear) {
+if (gear < 0 || gear >= specs.gearRatios.length) return 0;
+let engineTorque = specs.peakTorque * (rpm / 5500);
+let gearRatio = specs.gearRatios[gear] * specs.finalDrive;
+return engineTorque * gearRatio;
+}
+
+// G-Force chart data
+let gforceHistory = [];
+const maxHistory = 100;
+
+// Create G-Force chart
+const gforceCtx = document.getElementById('gforceChart').getContext('2d');
+const gforceChart = new Chart(gforceCtx, {
+type: 'line',
+data: {
+labels: [],
+datasets: [{
+label: 'Longitudinal G',
+data: [],
+borderColor: '#00ff88',
+backgroundColor: 'rgba(0,255,136,0.1)',
+fill: true,
+tension: 0.3
+}, {
+label: 'Lateral G',
+data: [],
+borderColor: '#ff6b00',
+backgroundColor: 'rgba(255,107,0,0.1)',
+fill: true,
+tension: 0.3
+}]
+},
+options: {
+responsive: true,
+maintainAspectRatio: false,
+scales: {
+y: {min: -2, max: 2, grid: {color: '#333'}, ticks: {color: '#888'}},
+x: {grid: {color: '#333'}, ticks: {color: '#888'}}
+},
+plugins: {legend: {labels: {color: '#fff'}}}
+}
+});
+
+// Power curve chart
+const powerCtx = document.getElementById('powerChart').getContext('2d');
+const powerChart = new Chart(powerCtx, {
+type: 'line',
+data: {
+labels: ['1000', '1500', '2000', '2500', '3000', '3500', '4000', '4500', '5000', '5500', '6000', '6500', '7000'],
+datasets: [{
+label: 'HP',
+data: [],
+borderColor: '#ff6b00',
+backgroundColor: 'rgba(255,107,0,0.1)',
+fill: true,
+tension: 0.3
+}, {
+label: 'Torque (Nm)',
+data: [],
+borderColor: '#00ff88',
+backgroundColor: 'rgba(0,255,136,0.1)',
+fill: true,
+tension: 0.3
+}]
+},
+options: {
+responsive: true,
+maintainAspectRatio: false,
+scales: {
+y: {grid: {color: '#333'}, ticks: {color: '#888'}},
+x: {grid: {color: '#333'}, ticks: {color: '#888'}}
+},
+plugins: {legend: {labels: {color: '#fff'}}}
+}
+});
+
+// Update power curve
+function updatePowerCurve() {
+let rpms = [1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000, 6500, 7000];
+let hpData = rpms.map(rpm => {
+let torque = specs.peakTorque * (rpm / 5500);
+return (torque * rpm) / 7127;
+});
+let torqueData = rpms.map(rpm => specs.peakTorque * (rpm / 5500));
+powerChart.data.datasets[0].data = hpData;
+powerChart.data.datasets[1].data = torqueData;
+powerChart.update();
+}
+
+// G-Force simulation (real implementation uses accelerometer)
+let simGforce = 0;
+let simLateral = 0;
+let simSpeed = 0;
+let simRPM = 0;
+let simGear = 0;
+
+function simulateData() {
+// Simulate acceleration
+simGforce = Math.sin(Date.now() / 2000) * 0.5 + (Math.random() - 0.5) * 0.2;
+simLateral = Math.sin(Date.now() / 3000) * 0.3 + (Math.random() - 0.5) * 0.1;
+simRPM = 1000 + (Math.sin(Date.now() / 1000) + 1) * 2000;
+simSpeed = rpmToSpeed(simRPM, simGear);
+simGear = Math.floor(Math.random() * 3);
+
+// Update display
+document.getElementById('gforceValue').textContent = Math.abs(simGforce).toFixed(2);
+document.getElementById('gforceLateral').textContent = Math.abs(simLateral).toFixed(2);
+document.getElementById('gforceCombined').textContent = Math.sqrt(simGforce * simGforce + simLateral * simLateral).toFixed(2);
+document.getElementById('speed').textContent = Math.round(simSpeed) + ' km/h';
+document.getElementById('rpm').textContent = Math.round(simRPM);
+document.getElementById('gear').textContent = ['1', '2', '3', '4'][simGear];
+
+let wheelT = getWheelTorque(simRPM, simGear);
+let engineT = specs.peakTorque * (simRPM / 5500);
+let hp = (engineT * simRPM) / 7127;
+document.getElementById('currentHP').textContent = Math.round(hp) + ' HP';
+document.getElementById('currentTorque').textContent = Math.round(engineT) + ' Nm';
+document.getElementById('wheelTorque').textContent = Math.round(wheelT) + ' Nm';
+document.getElementById('accel').textContent = (simGforce * 9.81).toFixed(1) + ' m/s²';
+
+// Update chart
+gforceHistory.push({long: simGforce, lat: simLateral});
+if (gforceHistory.length > maxHistory) gforceHistory.shift();
+gforceChart.data.labels = gforceHistory.map((_, i) => i);
+gforceChart.data.datasets[0].data = gforceHistory.map(g => g.long);
+gforceChart.data.datasets[1].data = gforceHistory.map(g => g.lat);
+gforceChart.update('none');
+}
+
+// Try real accelerometer
+if (window.DeviceMotionEvent) {
+window.addEventListener('devicemotion', function(e) {
+if (e.accelerationIncludingGravity) {
+simGforce = (e.accelerationIncludingGravity.z || 0) / 9.81;
+simLateral = (e.accelerationIncludingGravity.x || 0) / 9.81;
+}
+});
+}
+
+updatePowerCurve();
+setInterval(simulateData, 100);
+</script>
+</body>
+</html>
