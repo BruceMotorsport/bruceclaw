@@ -98,7 +98,19 @@ class Toolbox:
             json.dump(data, f, indent=2)
         return True
 
+import threading
+
 class H(http.server.BaseHTTPRequestHandler):
+    def _send_json(self, data):
+        try:
+            body = json.dumps(data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
     def do_GET(self):
         if self.path == "/":
             # Return toolbox status
