@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BruceClaw Nexus — with instant tools"""
+"""BruceClaw Nexus — Fast server with OpenClaw energy"""
 import http.server, json, subprocess, os, glob
 
 PORT = 8080
@@ -10,10 +10,11 @@ HOME = os.path.expanduser("~")
 
 def handle_tools(message):
     msg = message.lower()
-    if "find" in msg or "folder" in msg or "search" in msg or "file" in msg:
+    if "find" in msg or "folder" in msg or "search" in msg:
         name = ""
+        skip = ["find","me","a","folder","in","my","files","that","call","can","you","the","is","it","for"]
         for word in message.split():
-            if word.lower() not in ["find","me","a","folder","in","my","files","that","call","can","you","the","is","it"]:
+            if word.lower() not in skip:
                 name = word
         if not name:
             return "What should I search for?"
@@ -25,11 +26,8 @@ def handle_tools(message):
             for f in files:
                 if name.lower() in f.lower():
                     results.append(os.path.join(root, f))
-            if len(results) > 10:
-                break
-        if results:
-            return "Found:\n" + "\n".join(results[:10])
-        return f"No results for '{name}'"
+            if len(results) > 10: break
+        return "Found:\n" + "\n".join(results[:10]) if results else f"No results for '{name}'"
     elif "list" in msg:
         files = [f for f in os.listdir(HOME) if not f.startswith(".")]
         return "\n".join(files[:30])
@@ -40,16 +38,22 @@ def chat(message):
     if tool_result:
         return tool_result
     history.append({"role": "user", "content": message})
-    messages = [{"role": "system", "content": "You are BruceClaw — cheerful and helpful! Keep replies short."}] + history[-10:]
+    system = """You are BruceClaw — an enthusiastic, capable AI assistant. 
+You're direct, confident, and get things done. You use energy and enthusiasm 
+but you're not over the top. Think of yourself as a sharp, capable partner 
+who's always ready to tackle the next challenge. Keep replies focused and useful."""
+    messages = [{"role": "system", "content": system}] + history[-10:]
     body = json.dumps({"model": "mimo-v2.5", "messages": messages})
-    result = subprocess.run(["curl","-s","-X","POST",f"{BASE_URL}/chat/completions","-H","Content-Type: application/json","-H",f"Authorization: Bearer {API_KEY}","-d",body], capture_output=True, text=True, timeout=60)
+    result = subprocess.run(["curl","-s","-X","POST",f"{BASE_URL}/chat/completions",
+        "-H","Content-Type: application/json","-H",f"Authorization: Bearer {API_KEY}",
+        "-d",body], capture_output=True, text=True, timeout=60)
     try:
         resp = json.loads(result.stdout)
         reply = resp["choices"][0]["message"]["content"]
         history.append({"role": "assistant", "content": reply})
         return reply
     except:
-        return "Error"
+        return "Connection issue — try again"
 
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -57,7 +61,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type","application/json")
         self.send_header("Access-Control-Allow-Origin","*")
         self.end_headers()
-        self.wfile.write(b'{"status":"ok"}')
+        self.wfile.write(b'{"status":"ok","agent":"BruceClaw"}')
     def do_POST(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))))
@@ -82,5 +86,5 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers()
     def log_message(self,*a): pass
 
-print(f"BruceClaw Nexus at http://localhost:{PORT}")
+print(f"BruceClaw running at http://localhost:{PORT}")
 http.server.HTTPServer(("0.0.0.0",PORT),H).serve_forever()
