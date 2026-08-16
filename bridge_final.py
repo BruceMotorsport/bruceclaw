@@ -136,7 +136,11 @@ eavesdrop = {
 
 def clean_for_tts(text):
     """Clean text for natural TTS - remove symbols, format for speech"""
-    text = re.sub(r'[#*/\\@<>]', '', text)
+    import unicodedata
+    # Remove emojis and symbol characters
+    text = re.sub(r'[#*/\\@<>{}|~`]', '', text)
+    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)  # Remove all emojis
+    text = re.sub(r'[\u2190-\u21FF\u2600-\u26FF\u2700-\u27BF]', '', text)  # Arrows, misc symbols
     text = text.replace('&', 'and')
     text = text.replace('Rs.', 'Rupees')
     text = text.replace('Rs ', 'Rupees ')
