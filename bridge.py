@@ -1,46 +1,177 @@
 #!/usr/bin/env python3
 """
-BruceClaw Bridge — Connects Android app to OpenClaw Gateway
-Runs inside OpenClaw's environment, uses all its tools
+BruceClaw Bridge v2 — Full toolbox
+Exposes: tools, MCP servers, skills, files, shell, memory
 """
-import http.server
-import json
-import subprocess
-import os
-import sys
+import http.server, json, subprocess, os, glob, time
+from pathlib import Path
 
 PORT = 8080
+HOME = Path(os.path.expanduser("~"))
+LAZARUS = HOME / "Lazarus"
 
-class BridgeHandler(http.server.BaseHTTPRequestHandler):
+class Toolbox:
+    """All available tools"""
     
+    TOOLS = {
+        "files": "List, read, write, copy, move, delete files",
+        "shell": "Run shell commands",
+        "sms": "Read and send SMS",
+        "contacts": "Read phone contacts",
+        "calendar": "Read calendar events",
+        "camera": "Take photos",
+        "web": "Browse the internet",
+        "memory": "Read/write Lazarus memory",
+        "skills": "List and use installed skills",
+        "mcp": "Connect to MCP servers",
+        "notify": "Send notifications",
+        "tts": "Text to speech",
+        "battery": "Check battery status",
+        "wifi": "Check WiFi status",
+        "storage": "Check storage space",
+        "install": "Install packages via pkg",
+    }
+    
+    @staticmethod
+    def list_files(path=None):
+        p = Path(path) if path else HOME
+        files = []
+        for f in sorted(p.iterdir()):
+            if not f.name.startswith("."):
+                files.append({"name": f.name, "is_dir": f.is_dir(), "size": f.stat().st_size if f.is_file() else 0})
+        return files[:50]
+    
+    @staticmethod
+    def read_file(path):
+        with open(path) as f:
+            return f.read()[:50000]
+    
+    @staticmethod
+    def run_command(cmd):
+        # Safety check
+        blocked = ["rm -rf /", "sudo", "chmod 777", "mkfs", "dd if="]
+        for b in blocked:
+            if b in cmd:
+                return f"BLOCKED: Dangerous command '{b}'"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        return result.stdout or result.stderr or "Done"
+    
+    @staticmethod
+    def list_skills():
+        skills_dir = LAZARUS / "skills"
+        if not skills_dir.exists():
+            return []
+        return [f.name for f in skills_dir.iterdir() if f.is_dir()]
+    
+    @staticmethod
+    def list_mcp():
+        mcp_dir = LAZARUS / "mcp"
+        if not mcp_dir.exists():
+            return []
+        servers = []
+        for f in mcp_dir.glob("*.json"):
+            with open(f) as fh:
+                data = json.load(fh)
+                servers.append({"name": f.stem, "config": data})
+        return servers
+    
+    @staticmethod
+    def get_memory():
+        mem_file = LAZARUS / "memory" / "memories.json"
+        if mem_file.exists():
+            with open(mem_file) as f:
+                return json.load(f)
+        return {}
+    
+    @staticmethod
+    def save_memory(category, key, value):
+        mem_file = LAZARUS / "memory" / "memories.json"
+        mem_file.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if mem_file.exists():
+            with open(mem_file) as f:
+                data = json.load(f)
+        if category not in data:
+            data[category] = {}
+        data[category][key] = {"value": value, "timestamp": time.time()}
+        with open(mem_file, "w") as f:
+            json.dump(data, f, indent=2)
+        return True
+
+class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps({
-            "status": "ok",
-            "agent": "BruceClaw",
-            "bridge": "OpenClaw Gateway"
-        }).encode())
-    
-    def do_POST(self):
-        try:
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            message = body.get("message", "")
-            
-            # Route through OpenClaw's chat
-            reply = self.openclaw_chat(message)
-            
+        if self.path == "/":
+            # Return toolbox status
+            tools = list(Toolbox.TOOLS.keys())
+            skills = Toolbox.list_skills()
+            mcp = Toolbox.list_mcp()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({
-                "reply": reply,
-                "choices": [{"message": {"content": reply}}]
+                "status": "ok",
+                "agent": "BruceClaw",
+                "tools": tools,
+                "skills": skills,
+                "mcp": [s["name"] for s in mcp],
+                "lazarus": str(LAZARUS)
             }).encode())
+        elif self.path.startswith("/tools"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(Toolbox.TOOLS).encode())
+        elif self.path.startswith("/memory"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(Toolbox.get_memory()).encode())
+        elif self.path.startswith("/skills"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(Toolbox.list_skills()).encode())
+        elif self.path.startswith("/mcp"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(Toolbox.list_mcp()).encode())
+        else:
+            self.send_error(404)
+    
+    def do_POST(self):
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            action = body.get("action", "")
+            params = body.get("params", {})
             
+            result = ""
+            if action == "list_files":
+                result = json.dumps(Toolbox.list_files(params.get("path")))
+            elif action == "read_file":
+                result = Toolbox.read_file(params.get("path", ""))
+            elif action == "run":
+                result = Toolbox.run_command(params.get("command", ""))
+            elif action == "save_memory":
+                Toolbox.save_memory(params.get("category", "general"), params.get("key", ""), params.get("value", ""))
+                result = "Memory saved"
+            elif action == "get_memory":
+                result = json.dumps(Toolbox.get_memory())
+            elif action == "list_tools":
+                result = json.dumps(Toolbox.TOOLS)
+            else:
+                result = f"Unknown action: {action}"
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"reply": result, "choices": [{"message": {"content": result}}]}).encode())
         except Exception as e:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -55,46 +186,10 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
     
-    def openclaw_chat(self, message):
-        """Send message through OpenClaw's gateway"""
-        try:
-            # Use OpenClaw's CLI to send message
-            result = subprocess.run(
-                ["openclaw", "chat", "--once", message],
-                capture_output=True, text=True, timeout=60
-            )
-            return result.stdout.strip() or result.stderr.strip() or "No response"
-        except FileNotFoundError:
-            # OpenClaw not installed, use direct API
-            return self.direct_api(message)
-        except subprocess.TimeoutExpired:
-            return "Timeout — try again"
-        except Exception as e:
-            return f"Error: {e}"
-    
-    def direct_api(self, message):
-        """Direct API call as fallback"""
-        import urllib.request
-        api_key = os.environ.get("OPENCODE_ZEN_API_KEY", "")
-        url = "https://opencode.ai/zen/go/v1/chat/completions"
-        data = json.dumps({
-            "model": "mimo-v2.5",
-            "messages": [{"role": "user", "content": message}]
-        }).encode()
-        
-        req = urllib.request.Request(url, data=data, headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        })
-        
-        resp = urllib.request.urlopen(req, timeout=30)
-        result = json.loads(resp.read())
-        return result["choices"][0]["message"]["content"]
-    
     def log_message(self, *a):
         pass
 
-if __name__ == "__main__":
-    print(f"BruceClaw Bridge at http://localhost:{PORT}")
-    server = http.server.HTTPServer(("0.0.0.0", PORT), BridgeHandler)
-    server.serve_forever()
+print(f"BruceClaw Bridge v2 at http://localhost:{PORT}")
+print(f"Lazarus: {LAZARUS}")
+print(f"Tools: {list(Toolbox.TOOLS.keys())}")
+http.server.HTTPServer(("0.0.0.0", PORT), H).serve_forever()
