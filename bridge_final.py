@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""BruceClaw Bridge v4 - ALL telephony/device functions"""
 import socketserver, http.server, json, subprocess, os, time
 from pathlib import Path
 
@@ -12,7 +13,12 @@ class FastServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            tools = ["files","shell","sms","contacts","calendar","battery","wifi","storage","web","memory","skills","mcp","notify","tts","install","camera","bluetooth"]
+            tools = ["sms","send_sms","read_sms","call","dial","end_call",
+                     "call_log","contacts","battery","wifi","bluetooth",
+                     "location","camera","screenshot","clipboard","notify",
+                     "tts","volume","brightness","vibrate","ringtone",
+                     "storage","install","files","shell","calendar",
+                     "open_app","wallpaper","media","screen"]
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
@@ -24,36 +30,75 @@ class H(http.server.BaseHTTPRequestHandler):
         result = ""
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))))
-            msg = body.get("message","").lower()
-            print(f"REQ: {msg[:60]}")
+            msg = body.get("message","").lower().strip()
+            print(f"REQ: {msg[:80]}")
 
-            # PRIORITY 1: Action commands (check FIRST)
-            if "send sms" in msg or "send message" in msg or "text " in msg:
+            # ======== SMS ========
+            if any(x in msg for x in ["send sms","send message","text ","send a text"]):
                 number = ""
                 text = "Hello"
                 if "to" in msg:
-                    after_to = msg.split("to")[-1].strip()
-                    parts = after_to.split(None, 1)
-                    number = parts[0].replace(" ","").replace("-","")
+                    after = msg.split("to")[-1].strip()
+                    parts = after.split(None, 1)
+                    number = parts[0].replace(" ","").replace("-","").replace("+","")
                     if len(parts) > 1:
-                        text = parts[1].replace("say ","").replace("and say ","")
+                        text = parts[1].replace("say ","").replace("and say ","").replace("and tell ","")
                 if number:
-                    subprocess.run(["termux-sms-send","-n",number,text], timeout=5)
-                    result = f"SMS sent to {number}: {text}"
+                    r = subprocess.run(["termux-sms-send","-n",number,text], capture_output=True, text=True, timeout=10)
+                    if r.returncode == 0:
+                        result = f"SMS sent to {number}: {text}"
+                    else:
+                        result = f"SMS failed: {r.stderr.strip() or r.stdout.strip()}"
                 else:
                     result = "Give me a phone number to send to"
 
-            elif "open whatsapp" in msg or "whatsapp" in msg:
-                subprocess.run(["am","start","-a","android.intent.action.MAIN","-c","android.intent.category.LAUNCHER","com.whatsapp"], timeout=5)
-                result = "Opening WhatsApp"
+            elif any(x in msg for x in ["read sms","check sms","show sms","my sms","inbox","messages"]):
+                limit = "10"
+                r = subprocess.run(["termux-sms-list","-l",limit], capture_output=True, text=True, timeout=5)
+                try:
+                    msgs = json.loads(r.stdout)
+                    lines = [f"{m.get('address','?')}: {m.get('body','')[:60]}" for m in msgs[:10]]
+                    result = "\n".join(lines) if lines else "No messages"
+                except:
+                    result = r.stdout or "No messages"
 
-            elif "open " in msg:
-                app = msg.replace("open","").strip()
-                subprocess.run(["am","start","-a","android.intent.action.MAIN","-c","android.intent.category.LAUNCHER"], timeout=5)
-                result = f"Opening {app}"
+            # ======== PHONE CALLS ========
+            elif any(x in msg for x in ["call ","dial ","phone call","ring "]):
+                number = ""
+                for sep in ["to ","call ","dial ","ring "]:
+                    if sep in msg:
+                        after = msg.split(sep)[-1].strip()
+                        number = after.split()[0].replace(" ","").replace("-","")
+                        break
+                if number:
+                    subprocess.run(["am","start","-a","android.intent.action.DIAL","-d",f"tel:{number}"], capture_output=True, text=True, timeout=5)
+                    result = f"Calling {number}..."
+                else:
+                    result = "Give me a phone number to call"
 
-            # PRIORITY 2: Specific data requests
-            elif "battery" in msg:
+            elif any(x in msg for x in ["end call","hang up","disconnect","stop call"]):
+                subprocess.run(["input","keyevent","6"], timeout=5)
+                result = "Call ended"
+
+            elif any(x in msg for x in ["answer call","pick up","accept call"]):
+                subprocess.run(["input","keyevent","5"], timeout=5)
+                result = "Call answered"
+
+            elif any(x in msg for x in ["reject call","decline call","deny call"]):
+                subprocess.run(["input","keyevent","6"], timeout=5)
+                result = "Call rejected"
+
+            elif any(x in msg for x in ["call log","call history","recent calls","who called"]):
+                r = subprocess.run(["termux-call-log","-l","10"], capture_output=True, text=True, timeout=5)
+                try:
+                    calls = json.loads(r.stdout)
+                    lines = [f"{c.get('number','?')} ({c.get('type','?')}) {c.get('date','?')}" for c in calls[:10]]
+                    result = "\n".join(lines) if lines else "No call history"
+                except:
+                    result = r.stdout or "No call history"
+
+            # ======== PHONE STATE ========
+            elif any(x in msg for x in ["battery","power","charge"]):
                 r = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=3)
                 try:
                     d = json.loads(r.stdout)
@@ -63,77 +108,295 @@ class H(http.server.BaseHTTPRequestHandler):
                         result = f"{d.get('percentage','?')}%"
                     else:
                         result = f"Battery: {d.get('percentage','?')}% at {d.get('voltage',0)/1000:.1f}V, {d.get('temperature','?')}C"
-                except: result = r.stdout or "N/A"
+                except:
+                    result = r.stdout or "N/A"
 
-            elif "wifi" in msg:
-                r = subprocess.run(["termux-wifi-connectioninfo"], capture_output=True, text=True, timeout=3)
+            elif any(x in msg for x in ["sim","imei","phone number","phone info","network"]):
+                r = subprocess.run(["termux-telephony-deviceinfo"], capture_output=True, text=True, timeout=5)
                 try:
                     d = json.loads(r.stdout)
-                    result = f"WiFi: {d.get('ssid','?')} ({d.get('link_speed','?')}Mbps)"
-                except: result = r.stdout or "N/A"
+                    result = f"IMEI: {d.get('imei1','?')}\nNetwork: {d.get('network_operator_name','?')}\nSIM: {d.get('sim_operator_name','?')}"
+                except:
+                    result = r.stdout or "N/A"
 
-            elif "contact" in msg:
-                r = subprocess.run(["termux-contact-list"], capture_output=True, text=True, timeout=3)
+            elif any(x in msg for x in ["cell info","signal","cellular"]):
+                r = subprocess.run(["termux-telephony-cellinfo"], capture_output=True, text=True, timeout=5)
+                try:
+                    info = json.loads(r.stdout)
+                    result = json.dumps(info, indent=2)[:500]
+                except:
+                    result = r.stdout or "N/A"
+
+            # ======== CONTACTS ========
+            elif any(x in msg for x in ["contact","contacts","address book","phonebook"]):
+                r = subprocess.run(["termux-contact-list"], capture_output=True, text=True, timeout=5)
                 try:
                     contacts = json.loads(r.stdout)
-                    result = f"{len(contacts)} contacts" if contacts else "No contacts"
-                except: result = r.stdout or "No contacts"
+                    if "search" in msg or "find" in msg:
+                        q = msg.split("search")[-1].split("find")[-1].strip()
+                        matches = [c for c in contacts if q in c.get("name","").lower()]
+                        lines = [f"{c.get('name','?')}: {c.get('number','?')}" for c in matches[:10]]
+                        result = "\n".join(lines) if lines else f"No contacts matching '{q}'"
+                    else:
+                        lines = [f"{c.get('name','?')}: {c.get('number','?')}" for c in contacts[:20]]
+                        result = f"{len(contacts)} contacts:\n" + "\n".join(lines)
+                except:
+                    result = r.stdout or "No contacts"
 
-            elif "calendar" in msg or "event" in msg:
-                r = subprocess.run(["termux-calendar-list"], capture_output=True, text=True, timeout=3)
-                result = r.stdout or "No events"
-
-            elif "read sms" in msg or "check sms" in msg or "show sms" in msg or "my sms" in msg:
-                r = subprocess.run(["termux-sms-list","-l","5"], capture_output=True, text=True, timeout=3)
+            # ======== CALENDAR ========
+            elif any(x in msg for x in ["calendar","event","events","schedule","appointment"]):
+                r = subprocess.run(["termux-calendar-list"], capture_output=True, text=True, timeout=5)
                 try:
-                    msgs = json.loads(r.stdout)
-                    result = "\n".join([f"{m.get('address','?')}: {m.get('body','')[:50]}" for m in msgs[:5]])
-                except: result = r.stdout or "No messages"
+                    events = json.loads(r.stdout)
+                    lines = [f"{e.get('eventMessage','?')} ({e.get('begin','?')})" for e in events[:10]]
+                    result = "\n".join(lines) if lines else "No events"
+                except:
+                    result = r.stdout or "No events"
 
-            elif "storage" in msg or "space" in msg:
+            # ======== WIFI ========
+            elif "wifi" in msg:
+                if any(x in msg for x in ["scan","available","networks","nearby"]):
+                    r = subprocess.run(["termux-wifi-scaninfo"], capture_output=True, text=True, timeout=10)
+                    try:
+                        nets = json.loads(r.stdout)
+                        lines = [f"{n.get('ssid','?')} ({n.get('frequency','?')}MHz)" for n in nets[:10]]
+                        result = "\n".join(lines) if lines else "No networks found"
+                    except:
+                        result = r.stdout or "No networks"
+                elif any(x in msg for x in ["on","enable","connect"]):
+                    subprocess.run(["termux-wifi-enable","on"], timeout=5)
+                    result = "WiFi enabled"
+                elif any(x in msg for x in ["off","disable"]):
+                    subprocess.run(["termux-wifi-enable","off"], timeout=5)
+                    result = "WiFi disabled"
+                else:
+                    r = subprocess.run(["termux-wifi-connectioninfo"], capture_output=True, text=True, timeout=3)
+                    try:
+                        d = json.loads(r.stdout)
+                        result = f"WiFi: {d.get('ssid','?')} ({d.get('link_speed','?')}Mbps)"
+                    except:
+                        result = r.stdout or "N/A"
+
+            # ======== BLUETOOTH ========
+            elif any(x in msg for x in ["bluetooth","bt "]):
+                if any(x in msg for x in ["scan","discover","find","nearby","devices"]):
+                    r = subprocess.run(["termux-bt-scan"], capture_output=True, text=True, timeout=15)
+                    try:
+                        devs = json.loads(r.stdout)
+                        lines = [f"{d.get('name','?')} ({d.get('address','?')})" for d in devs[:10]]
+                        result = f"Found {len(devs)} devices:\n" + "\n".join(lines) if lines else "No devices found"
+                    except:
+                        result = r.stdout or "No devices"
+                elif any(x in msg for x in ["on","enable"]):
+                    subprocess.run(["termux-bt-enable","on"], timeout=5)
+                    result = "Bluetooth enabled"
+                elif any(x in msg for x in ["off","disable"]):
+                    subprocess.run(["termux-bt-enable","off"], timeout=5)
+                    result = "Bluetooth disabled"
+                else:
+                    r = subprocess.run(["termux-bt-info"], capture_output=True, text=True, timeout=5)
+                    try:
+                        d = json.loads(r.stdout)
+                        result = f"BT: {d.get('enabled','?')}, MAC: {d.get('address','?')}"
+                    except:
+                        result = r.stdout or "N/A"
+
+            # ======== LOCATION ========
+            elif any(x in msg for x in ["location","where am i","gps","position","coordinates","map"]):
+                r = subprocess.run(["termux-location","-p","gps"], capture_output=True, text=True, timeout=10)
+                try:
+                    d = json.loads(r.stdout)
+                    lat = d.get("latitude","?")
+                    lon = d.get("longitude","?")
+                    result = f"Location: {lat}, {lon}\nhttps://maps.google.com/?q={lat},{lon}"
+                except:
+                    result = r.stdout or "N/A"
+
+            # ======== CAMERA ========
+            elif any(x in msg for x in ["camera","photo","take picture","snap"]):
+                path = str(HOME / f"photo_{int(time.time())}.jpg")
+                r = subprocess.run(["termux-camera-photo",path], capture_output=True, text=True, timeout=15)
+                if os.path.exists(path):
+                    result = f"Photo saved: {path}"
+                else:
+                    result = f"Camera failed: {r.stderr.strip()}"
+
+            # ======== SCREENSHOT ========
+            elif "screenshot" in msg:
+                path = str(HOME / f"screen_{int(time.time())}.png")
+                r = subprocess.run(["termux-screenshot",path], capture_output=True, text=True, timeout=5)
+                if os.path.exists(path):
+                    result = f"Screenshot saved: {path}"
+                else:
+                    result = f"Screenshot failed: {r.stderr.strip()}"
+
+            # ======== CLIPBOARD ========
+            elif any(x in msg for x in ["clipboard","copy","paste","clip"]):
+                if any(x in msg for x in ["copy ","set ","put "]):
+                    text = msg.split("copy")[-1].split("set")[-1].split("put")[-1].strip()
+                    subprocess.run(["termux-clipboard-set",text], timeout=3)
+                    result = f"Copied: {text}"
+                else:
+                    r = subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, timeout=3)
+                    result = f"Clipboard: {r.stdout.strip()}" if r.stdout.strip() else "Clipboard empty"
+
+            # ======== NOTIFICATIONS ========
+            elif any(x in msg for x in ["notify","notification","alert"]):
+                m = msg.replace("notify","").replace("notification","").replace("alert","").strip()
+                if m:
+                    subprocess.run(["termux-notification","-t","BruceClaw","-c",m], timeout=3)
+                    result = "Notification sent"
+                else:
+                    result = "What should the notification say?"
+
+            elif any(x in msg for x in ["dismiss notification","clear notification"]):
+                subprocess.run(["termux-notification-remove","-t","BruceClaw"], timeout=3)
+                result = "Notification dismissed"
+
+            # ======== TTS ========
+            elif any(x in msg for x in ["speak","say ","tts","voice","read aloud","read out"]):
+                text = ""
+                for sep in ["speak ","say ","tts ","voice ","read aloud ","read out "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    subprocess.run(["termux-tts-speak",text], timeout=10)
+                    result = f"Speaking: {text}"
+                else:
+                    result = "What should I say?"
+
+            # ======== VOLUME ========
+            elif any(x in msg for x in ["volume","sound","mute","unmute","loud","quiet"]):
+                if any(x in msg for x in ["mute","silent","quiet","down"]):
+                    subprocess.run(["termux-volume","music","0"], timeout=3)
+                    result = "Volume muted"
+                elif any(x in msg for x in ["unmute","loud","max","up"]):
+                    subprocess.run(["termux-volume","music","15"], timeout=3)
+                    result = "Volume maxed"
+                else:
+                    r = subprocess.run(["termux-volume"], capture_output=True, text=True, timeout=3)
+                    result = r.stdout or "N/A"
+
+            # ======== BRIGHTNESS ========
+            elif any(x in msg for x in ["brightness","dim","bright","screen light"]):
+                if any(x in msg for x in ["max","full","bright","100"]):
+                    subprocess.run(["termux-brightness","255"], timeout=3)
+                    result = "Brightness maxed"
+                elif any(x in msg for x in ["min","low","dim","dark"]):
+                    subprocess.run(["termux-brightness","10"], timeout=3)
+                    result = "Brightness dimmed"
+                else:
+                    subprocess.run(["termux-brightness","128"], timeout=3)
+                    result = "Brightness set to 50%"
+
+            # ======== VIBRATE ========
+            elif any(x in msg for x in ["vibrate","buzz","haptic"]):
+                ms = "2000" if "long" in msg else "500"
+                subprocess.run(["termux-vibrate","-d",ms], timeout=5)
+                result = f"Vibrating for {ms}ms"
+
+            # ======== RINGTONE ========
+            elif any(x in msg for x in ["ringtone","alarm ring","play alarm"]):
+                subprocess.run(["termux-media-player","play","-t","alarm"], timeout=5)
+                result = "Playing alarm tone"
+
+            # ======== STORAGE ========
+            elif any(x in msg for x in ["storage","space","disk"]):
                 r = subprocess.run(["df","-h","/data"], capture_output=True, text=True, timeout=3)
                 lines = r.stdout.strip().split("\n")
                 result = lines[1] if len(lines) > 1 else "N/A"
 
-            elif "screenshot" in msg:
-                subprocess.run(["termux-screenshot",str(HOME/"screen.png")], timeout=5)
-                result = "Screenshot saved"
+            # ======== OPEN APP ========
+            elif any(x in msg for x in ["open ","launch ","start app"]):
+                app = msg.replace("open","").replace("launch","").replace("start app","").strip()
+                apps = {
+                    "whatsapp":"com.whatsapp","telegram":"org.telegram.messenger",
+                    "chrome":"com.android.chrome","settings":"com.android.settings",
+                    "phone":"com.android.dialer","messages":"com.android.messaging",
+                    "camera":"com.android.camera","gallery":"com.android.gallery3d",
+                    "maps":"com.google.android.apps.maps","youtube":"com.google.android.youtube",
+                    "play store":"com.android.vending","calculator":"com.android.calculator2",
+                    "clock":"com.android.deskclock","contacts":"com.android.contacts",
+                    "files":"com.google.android.apps.nbu.files"
+                }
+                pkg = None
+                for name, package in apps.items():
+                    if name in app:
+                        pkg = package
+                        break
+                if pkg:
+                    subprocess.run(["monkey","-p",pkg,"-c","android.intent.category.LAUNCHER","1"], capture_output=True, text=True, timeout=5)
+                    result = f"Opening {app}..."
+                else:
+                    result = f"Unknown app '{app}'. Try: whatsapp, telegram, chrome, settings, camera, phone, maps, youtube"
 
-            elif "camera" in msg or "photo" in msg:
-                subprocess.run(["termux-camera-photo",str(HOME/"photo.jpg")], timeout=10)
-                result = "Photo captured"
+            # ======== FILES ========
+            elif any(x in msg for x in ["file","ls ","list files","directory"]):
+                path = str(HOME)
+                r = subprocess.run(["ls","-la",path], capture_output=True, text=True, timeout=5)
+                result = r.stdout[:800] or "Empty"
 
-            elif "bluetooth" in msg or "scan" in msg:
-                r = subprocess.run(["termux-bt-info"], capture_output=True, text=True, timeout=5)
-                result = r.stdout or "No Bluetooth devices"
+            # ======== SHELL ========
+            elif any(x in msg for x in ["run ","execute ","terminal ","shell ","command "]):
+                cmd = msg
+                for sep in ["run ","execute ","terminal ","shell ","command "]:
+                    if sep in msg:
+                        cmd = msg.split(sep, 1)[-1].strip()
+                        break
+                r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+                result = (r.stdout or r.stderr or "Done")[:800]
 
+            # ======== SCREEN ========
+            elif any(x in msg for x in ["screen on","screen off","turn on screen","turn off screen","lock screen"]):
+                if any(x in msg for x in ["on","wake"]):
+                    subprocess.run(["termux-wake-lock"], timeout=3)
+                    result = "Screen on"
+                else:
+                    subprocess.run(["input","keyevent","26"], timeout=3)
+                    result = "Screen off"
+
+            # ======== MEDIA ========
+            elif any(x in msg for x in ["play music","play song","music","pause","stop music"]):
+                if any(x in msg for x in ["pause","stop","halt"]):
+                    subprocess.run(["termux-media-player","pause"], timeout=3)
+                    result = "Music paused"
+                else:
+                    subprocess.run(["termux-media-player","play","-t","music"], timeout=3)
+                    result = "Playing music"
+
+            # ======== INSTALL ========
             elif "install" in msg:
                 pkg = msg.replace("install","").strip()
                 subprocess.run(["pkg","install","-y",pkg], capture_output=True, text=True, timeout=60)
                 result = f"{pkg} installed"
 
-            elif "notify" in msg:
-                m = msg.replace("notify","").strip()
-                subprocess.run(["termux-notification","-t","BruceClaw","-c",m], timeout=3)
-                result = "Notification sent"
-
-            elif "run " in msg or "command" in msg:
-                cmd = msg.replace("run","").replace("command","").strip()
-                r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-                result = (r.stdout or r.stderr or "Done")[:500]
-
-            elif "file" in msg:
-                files = [f.name for f in HOME.iterdir() if not f.name.startswith(".")][:20]
-                result = ", ".join(files)
-
-            # PRIORITY 3: Only if nothing above matched
-            elif "list" in msg and ("tool" in msg or "skill" in msg or "capabilit" in msg):
-                result = "Tools: files, shell, sms, contacts, calendar, battery, wifi, storage, web, memory, skills, mcp, notify, tts, install, camera, bluetooth"
+            # ======== HELP ========
+            elif any(x in msg for x in ["help","what can","tools","capabilities","functions"]):
+                result = """SMS: send/read
+Calls: dial/end/answer/reject/call log
+Contacts: list/search
+Battery: level/voltage/health
+WiFi: status/scan/on/off
+Bluetooth: info/scan/on/off
+Location: GPS
+Camera: photo
+Screenshot
+Clipboard: copy/paste
+Notifications
+TTS: speak
+Volume: up/down/mute
+Brightness: dim/bright
+Vibrate
+Storage: space
+Open apps
+Files/Shell
+Calendar/Events"""
 
             else:
-                result = "I can: battery, sms, contacts, calendar, files, camera, bluetooth, notifications. What do you need?"
+                result = "I can do: SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, files, calendar. What do you need?"
 
-            print(f"RES: {result[:60]}")
+            print(f"RES: {result[:80]}")
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
@@ -146,7 +409,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-Type","application/json")
                 self.send_header("Access-Control-Allow-Origin","*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"reply":"Error: "+str(e)}).encode())
+                self.wfile.write(json.dumps({"reply":f"Error: {str(e)}"}).encode())
             except: pass
 
     def do_OPTIONS(self):
@@ -158,5 +421,5 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def log_message(self,*a): pass
 
-print(f"BruceClaw Bridge at http://localhost:{PORT}")
+print(f"BruceClaw Bridge v4 at http://localhost:{PORT}")
 FastServer(("0.0.0.0",PORT),H).serve_forever()
