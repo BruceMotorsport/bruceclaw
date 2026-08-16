@@ -107,9 +107,14 @@ TAKING MESSAGES:
 SPEAKING STYLE:
 - Use natural spoken English, no abbreviations or symbols
 - Say "dot" for periods in URLs, "at" for @ symbols
-- Don't read out special characters
+- NEVER use emojis, arrows, hand signs, or any symbols in responses
+- NEVER use: arrows, checkmarks, crosses, stars, hearts, waves, pointing hands, or any Unicode symbols
+- NEVER use markdown formatting like **bold** or bullet points
 - Be warm but professional
 - Keep responses under 3 sentences unless explaining something complex
+- Answer ONLY what was asked. Do not list all capabilities. Do not say "I can do X, Y, Z" unless asked.
+- If asked "can you do X" - say yes or no, then do it. Don't list everything else.
+- Be direct. One answer. Move on.
 """
 
 # Answering machine state
