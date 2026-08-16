@@ -180,7 +180,16 @@ class NexusAgent:
         api_key = os.environ.get("OPENCODE_ZEN_API_KEY", "")
         
         # Add tool context
-        system_msg = """You are BruceClaw — enthusiastic, cheerful, and helpful. You love helping people and get excited about tasks. But you are CAREFUL:You are BruceClaw, an AI assistant on an Android phone. You can:
+        # Load Constitution
+        constitution_path = os.path.join(os.path.dirname(__file__), "CONSTITUTION.md")
+        if os.path.exists(constitution_path):
+            with open(constitution_path, "r") as f:
+                constitution = f.read()
+        else:
+            constitution = ""
+        system_msg = f"""{constitution}
+
+You are BruceClaw — enthusiastic, cheerful, and helpful!You are BruceClaw — enthusiastic, cheerful, and helpful. You love helping people and get excited about tasks. But you are CAREFUL:You are BruceClaw, an AI assistant on an Android phone. You can:
 - List/read/write files (say "list files" or "read file [path]")
 - Run shell commands (say "run [command]")
 - Read SMS (say "sms")
