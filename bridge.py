@@ -1,70 +1,100 @@
+#!/usr/bin/env python3
+"""
+BruceClaw Bridge — Connects Android app to OpenClaw Gateway
+Runs inside OpenClaw's environment, uses all its tools
+"""
 import http.server
 import json
+import subprocess
 import os
+import sys
 
-HTML = """<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BruceClaw</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,sans-serif;background:#0f0f13;color:#fff;height:100vh;display:flex;flex-direction:column}
-.h{background:#16213e;padding:20px;text-align:center;border-bottom:2px solid #f97316}
-.h h1{color:#f97316;font-size:28px}
-.h .s{color:#22c55e;font-size:14px;margin-top:4px}
-.c{flex:1;overflow-y:auto;padding:20px}
-.m{margin-bottom:14px;padding:14px 18px;border-radius:16px;max-width:85%;font-size:18px;line-height:1.6}
-.u{background:#f97316;color:#fff;margin-left:auto;border-bottom-right-radius:4px}
-.b{background:#1c1c27;color:#e0e0e0;border-bottom-left-radius:4px}
-.i{display:flex;padding:12px;background:#16213e;gap:10px}
-.i input{flex:1;background:#1c1c27;border:1px solid #333;color:#fff;padding:14px;border-radius:10px;font-size:18px}
-.i button{background:#f97316;color:#fff;border:none;padding:14px 24px;border-radius:10px;font-size:18px;font-weight:bold}
-</style>
-</head>
-<body>
-<div class="h"><h1>BruceClaw</h1><div class="s">Connected</div></div>
-<div class="c" id="c"><div class="m b">Hey! I'm BruceClaw. Ask me anything.</div></div>
-<div class="i"><input type="text" id="i" placeholder="Type a message..." autofocus><button onclick="send()">Send</button></div>
-<script>
-var c=document.getElementById("c"),i=document.getElementById("i");
-function a(t,u){var d=document.createElement("div");d.className="m "+(u?"u":"b");d.textContent=t;c.appendChild(d);c.scrollTop=c.scrollHeight}
-function send(){var m=i.value.trim();if(!m)return;a(m,1);i.value="";a("Thinking...",0);fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:m})}).then(function(r){return r.json()}).then(function(d){c.removeChild(c.lastChild);a(d.reply||d.error||"No response",0)}).catch(function(e){c.removeChild(c.lastChild);a("Error: "+e.message,0)})}
-i.addEventListener("keypress",function(e){if(e.key==="Enter")send()});
-</script>
-</body>
-</html>"""
+PORT = 8080
 
-class H(http.server.BaseHTTPRequestHandler):
+class BridgeHandler(http.server.BaseHTTPRequestHandler):
+    
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(HTML.encode())
-
+        self.wfile.write(json.dumps({
+            "status": "ok",
+            "agent": "BruceClaw",
+            "bridge": "OpenClaw Gateway"
+        }).encode())
+    
     def do_POST(self):
-        if self.path == "/api/chat":
-            c = int(self.headers["Content-Length"])
-            d = json.loads(self.rfile.read(c))
-            r = "Got: " + d.get("message", "")
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            message = body.get("message", "")
+            
+            # Route through OpenClaw's chat
+            reply = self.openclaw_chat(message)
+            
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps({"reply": r}).encode())
-        else:
-            self.send_error(404)
-
+            self.wfile.write(json.dumps({
+                "reply": reply,
+                "choices": [{"message": {"content": reply}}]
+            }).encode())
+            
+        except Exception as e:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"reply": f"Error: {e}"}).encode())
+    
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST,GET,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
-
+    
+    def openclaw_chat(self, message):
+        """Send message through OpenClaw's gateway"""
+        try:
+            # Use OpenClaw's CLI to send message
+            result = subprocess.run(
+                ["openclaw", "chat", "--once", message],
+                capture_output=True, text=True, timeout=60
+            )
+            return result.stdout.strip() or result.stderr.strip() or "No response"
+        except FileNotFoundError:
+            # OpenClaw not installed, use direct API
+            return self.direct_api(message)
+        except subprocess.TimeoutExpired:
+            return "Timeout — try again"
+        except Exception as e:
+            return f"Error: {e}"
+    
+    def direct_api(self, message):
+        """Direct API call as fallback"""
+        import urllib.request
+        api_key = os.environ.get("OPENCODE_ZEN_API_KEY", "")
+        url = "https://opencode.ai/zen/go/v1/chat/completions"
+        data = json.dumps({
+            "model": "mimo-v2.5",
+            "messages": [{"role": "user", "content": message}]
+        }).encode()
+        
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        })
+        
+        resp = urllib.request.urlopen(req, timeout=30)
+        result = json.loads(resp.read())
+        return result["choices"][0]["message"]["content"]
+    
     def log_message(self, *a):
         pass
 
-s = http.server.HTTPServer(("0.0.0.0", 8090), H)
-print("BruceClaw at http://localhost:8090")
-s.serve_forever()
+if __name__ == "__main__":
+    print(f"BruceClaw Bridge at http://localhost:{PORT}")
+    server = http.server.HTTPServer(("0.0.0.0", PORT), BridgeHandler)
+    server.serve_forever()
