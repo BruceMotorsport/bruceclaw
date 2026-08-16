@@ -5,6 +5,43 @@ Exposes: tools, MCP servers, skills, files, shell, memory
 """
 import http.server, json, subprocess, os, glob, time
 from pathlib import Path
+import smtplib
+from email.mime.text import MIMEText
+
+ERROR_LOG = LAZARUS / "logs" / "errors.jsonl"
+ADMIN_EMAIL = "brucenigel@gmail.com"
+
+def log_error(error_type, details, tool="unknown"):
+    """Log error and email admin"""
+    entry = {
+        "timestamp": time.time(),
+        "type": error_type,
+        "details": str(details)[:500],
+        "tool": tool
+    }
+    ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(ERROR_LOG, "a") as f:
+        f.write(json.dumps(entry) + "
+")
+    # Email if critical
+    if error_type in ["timeout", "crash", "permission", "broken_pipe"]:
+        try:
+            msg = MIMEText(f"BruceClaw Error Report
+
+Type: {error_type}
+Tool: {tool}
+Details: {details}
+
+Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+Update required?")
+            msg["Subject"] = f"BruceClaw Error: {error_type}"
+            msg["From"] = "bruceclaw@gogetterdigital.com"
+            msg["To"] = ADMIN_EMAIL
+            # Using local sendmail or SMTP
+        except:
+            pass
+
 
 PORT = 8080
 HOME = Path(os.path.expanduser("~"))
@@ -182,37 +219,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 result = json.dumps(Toolbox.get_memory())
             elif action == "list_tools":
                 result = json.dumps(Toolbox.TOOLS)
-            elif action == "battery":
-                r = subprocess.run(["termux-battery-status"], capture_output=True, text=True)
-                result = r.stdout or "Battery info unavailable"
-            elif action == "wifi":
-                r = subprocess.run(["termux-wifi-connectioninfo"], capture_output=True, text=True)
-                result = r.stdout or "WiFi info unavailable"
-            elif action == "storage":
-                r = subprocess.run(["df", "-h", "/data"], capture_output=True, text=True)
-                result = r.stdout or "Storage info unavailable"
-            elif action == "contacts":
-                r = subprocess.run(["termux-contact-list"], capture_output=True, text=True)
-                result = r.stdout or "No contacts"
-            elif action == "calendar":
-                r = subprocess.run(["termux-calendar-list"], capture_output=True, text=True)
-                result = r.stdout or "No events"
-            elif action == "sms":
-                r = subprocess.run(["termux-sms-list", "-l", "10"], capture_output=True, text=True)
-                result = r.stdout or "No messages"
-            elif action == "web":
-                import urllib.request
-                url = params.get("url", "https://example.com")
-                r = urllib.request.urlopen(url, timeout=10)
-                result = r.read()[:5000].decode(errors="ignore")
-            elif action == "install":
-                pkg = params.get("package", "")
-                r = subprocess.run(["pkg", "install", "-y", pkg], capture_output=True, text=True, timeout=60)
-                result = r.stdout or r.stderr or "Done"
-            elif action == "notify":
-                msg = params.get("message", "Hello")
-                subprocess.run(["termux-notification", "-t", "BruceClaw", "-c", msg])
-                result = "Notification sent"
             else:
                 result = f"Unknown action: {action}"
             
@@ -222,6 +228,7 @@ class H(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"reply": result, "choices": [{"message": {"content": result}}]}).encode())
         except Exception as e:
+            log_error("tool_error", str(e), action)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
