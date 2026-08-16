@@ -334,18 +334,63 @@ class H(http.server.BaseHTTPRequestHandler):
                             text = raw.strip() or "Hi"
                         break
                 if not number:
-                    # Try to extract any phone number from the message
                     import re
                     nums = re.findall(r'0\d{9}', msg)
                     if nums:
                         number = nums[0]
                 if number:
-                    # Use Android intent to open WhatsApp with pre-filled message
                     url = f"https://wa.me/{number}?text={text.replace(' ','%20')}"
                     subprocess.run(["am","start","-a","android.intent.action.VIEW","-d",url], capture_output=True, text=True, timeout=5)
                     result = f"Opening WhatsApp to {number} with: {text}"
                 else:
                     result = "Give me a phone number and message for WhatsApp"
+
+            elif any(x in msg for x in ["share file","send file","share via whatsapp","send via whatsapp","whatsapp file"]):
+                # Find the file to share
+                file_path = ""
+                for sep in ["share ","send ","file "]:
+                    if sep in msg:
+                        after = msg.split(sep)[-1].strip()
+                        for kw in ["via whatsapp","on whatsapp","to whatsapp","through whatsapp"]:
+                            after = after.replace(kw,"")
+                        file_path = after.strip()
+                        break
+                if not file_path:
+                    # Try to find any path-like string
+                    import re
+                    paths = re.findall(r'[\w/\._-]+\.\w+', msg)
+                    if paths:
+                        file_path = paths[0]
+                if file_path:
+                    # Expand home directory
+                    if file_path.startswith("~"):
+                        file_path = str(HOME / file_path[2:])
+                    elif not file_path.startswith("/"):
+                        file_path = str(HOME / file_path)
+                    if os.path.exists(file_path):
+                        r = subprocess.run(["termux-share","-a","send","--include","com.whatsapp",file_path], capture_output=True, text=True, timeout=15)
+                        result = f"Sharing {os.path.basename(file_path)} via WhatsApp..."
+                    else:
+                        result = f"File not found: {file_path}"
+                else:
+                    result = "Which file? Say: share file [filename] via whatsapp"
+
+            elif any(x in msg for x in ["share photo","send photo","share picture","send picture","share image"]):
+                # Share the most recent photo
+                photos = sorted(HOME.glob("photo_*.jpg"), key=os.path.getmtime, reverse=True)
+                if photos:
+                    r = subprocess.run(["termux-share","-a","send","--include","com.whatsapp",str(photos[0])], capture_output=True, text=True, timeout=15)
+                    result = f"Sharing {photos[0].name} via WhatsApp..."
+                else:
+                    result = "No photos yet. Say: take a photo first"
+
+            elif any(x in msg for x in ["share screenshot","send screenshot"]):
+                shots = sorted(HOME.glob("screen_*.png"), key=os.path.getmtime, reverse=True)
+                if shots:
+                    r = subprocess.run(["termux-share","-a","send","--include","com.whatsapp",str(shots[0])], capture_output=True, text=True, timeout=15)
+                    result = f"Sharing {shots[0].name} via WhatsApp..."
+                else:
+                    result = "No screenshots yet. Say: take a screenshot first"
 
             # ======== OPEN APP ========
             elif any(x in msg for x in ["open ","launch ","start app"]):
