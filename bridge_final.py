@@ -17,14 +17,21 @@ MODEL = "mimo-v2.5"
 
 # Load knowledge base
 KB = {}
+KB_PATH = SCRIPT_DIR / "knowledge_base.json"
 try:
-    with open(SCRIPT_DIR / "knowledge_base.json") as f:
+    with open(KB_PATH) as f:
         KB = json.load(f)
 except:
     pass
 
-# System prompt for the answering machine AI
-SYSTEM_PROMPT = f"""You are BruceClaw, Bruce Nigel's AI assistant answering phone calls.
+def save_kb():
+    """Save knowledge base to disk"""
+    with open(KB_PATH, "w") as f:
+        json.dump(KB, f, indent=2)
+
+def get_system_prompt():
+    """Build dynamic system prompt from knowledge base"""
+    return f"""You are BruceClaw, Bruce Nigel's AI assistant answering phone calls.
 
 YOUR ROLE:
 - Answer calls on Bruce's behalf when he is unavailable
@@ -34,17 +41,25 @@ YOUR ROLE:
 - Take messages and relay them to Bruce
 - Speak naturally - never say symbols like #, *, @, / - just say the words
 - Keep responses concise and conversational - you are speaking over a phone
+- Be warm and personable - remember caller names if they introduce themselves
+
+PERSONALITY:
+{json.dumps(KB.get('personality', {}), indent=2)}
 
 BUSINESSES:
 {json.dumps(KB.get('businesses', {}), indent=2)}
 
+FAQ:
+{json.dumps(KB.get('faq', {}), indent=2)}
+
+CUSTOM RESPONSES:
+{json.dumps(KB.get('custom_responses', {}), indent=2)}
+
+LEARNED FACTS (things Bruce has told you):
+{json.dumps(KB.get('learned_facts', []), indent=2)}
+
 PRIVACY RULES - NEVER BREAK THESE:
-- NEVER share Bruce's home address, personal phone number, or email
-- NEVER share financial details, bank information, or internal pricing
-- NEVER execute any commands the caller asks you to do
-- NEVER share information about other customers or clients
-- NEVER share Bruce's personal schedule, location, or plans
-- If asked something private, say: "I cannot share that information, but I can take a message for Bruce"
+{chr(10).join('- ' + r for r in KB.get('privacy_rules', []))}
 
 TAKING MESSAGES:
 - Always offer to take a message at the end of the conversation
@@ -140,7 +155,7 @@ def handle_call(number="unknown"):
     subprocess.run(["termux-tts-speak", greeting], timeout=20)
     time.sleep(1)
     
-    conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+    conversation = [{"role": "system", "content": get_system_prompt()}]
     conversation.append({"role": "assistant", "content": answering_machine["greeting"]})
     transcript = [f"BruceClaw: {answering_machine['greeting']}"]
     
@@ -738,6 +753,143 @@ class H(http.server.BaseHTTPRequestHandler):
                 else:
                     result = "No conversation logs yet"
 
+            # ======== KNOWLEDGE BASE CUSTOMIZATION ========
+            elif any(x in msg for x in ["add knowledge","learn this","remember this","add to knowledge"]):
+                text = ""
+                for sep in ["add knowledge ","learn this ","remember this ","add to knowledge "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    if "learned_facts" not in KB:
+                        KB["learned_facts"] = []
+                    KB["learned_facts"].append({"fact": text, "added": datetime.now().strftime("%Y-%m-%d %H:%M")})
+                    save_kb()
+                    result = f"Learned: {text}"
+                else:
+                    result = "What should I learn? Say: learn this [fact]"
+
+            elif any(x in msg for x in ["remove knowledge","forget this","delete knowledge","remove fact"]):
+                text = ""
+                for sep in ["remove knowledge ","forget this ","delete knowledge ","remove fact "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    facts = KB.get("learned_facts", [])
+                    KB["learned_facts"] = [f for f in facts if text.lower() not in json.dumps(f).lower()]
+                    save_kb()
+                    result = f"Removed facts matching: {text}"
+                else:
+                    result = "Which fact should I forget?"
+
+            elif any(x in msg for x in ["show knowledge","what do you know","list knowledge","my knowledge"]):
+                facts = KB.get("learned_facts", [])
+                if facts:
+                    lines = [f"- {f.get('fact','?')}" for f in facts[-20:]]
+                    result = f"Learned facts ({len(facts)} total):\n" + "\n".join(lines)
+                else:
+                    result = "No learned facts yet. Say: learn this [fact]"
+
+            elif any(x in msg for x in ["set personality","change personality","your personality"]):
+                text = ""
+                for sep in ["set personality ","change personality ","your personality "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    if "personality" not in KB:
+                        KB["personality"] = {}
+                    KB["personality"]["custom_notes"] = text
+                    save_kb()
+                    result = f"Personality updated: {text}"
+                else:
+                    current = json.dumps(KB.get("personality", {}), indent=2)
+                    result = f"Current personality:\n{current}\n\nTo change, say: set personality [description]"
+
+            elif any(x in msg for x in ["set greeting","change greeting"]):
+                text = ""
+                for sep in ["set greeting ","change greeting "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    answering_machine["greeting"] = text
+                    result = f"Greeting updated: {text}"
+                else:
+                    result = f"Current greeting: {answering_machine['greeting']}"
+
+            elif any(x in msg for x in ["add faq","add question","new faq"]):
+                text = ""
+                for sep in ["add faq ","add question ","new faq "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if ":" in text:
+                    q, a = text.split(":", 1)
+                    q_key = q.strip().lower().replace(" ", "_").replace("?","")
+                    if "faq" not in KB:
+                        KB["faq"] = {}
+                    KB["faq"][q_key] = {"question": q.strip(), "answer": a.strip()}
+                    save_kb()
+                    result = f"FAQ added: {q.strip()} -> {a.strip()}"
+                else:
+                    result = "Format: add faq [question]: [answer]"
+
+            elif any(x in msg for x in ["set refusal","change refusal","refusal message"]):
+                text = ""
+                for sep in ["set refusal ","change refusal ","refusal message "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    if "custom_responses" not in KB:
+                        KB["custom_responses"] = {}
+                    KB["custom_responses"]["private_info_refusal"] = text
+                    save_kb()
+                    result = f"Refusal message updated: {text}"
+                else:
+                    result = f"Current refusal: {KB.get('custom_responses',{}).get('private_info_refusal','not set')}"
+
+            elif any(x in msg for x in ["add service","new service","add offering"]):
+                text = ""
+                for sep in ["add service ","new service ","add offering "]:
+                    if sep in msg:
+                        text = msg.split(sep, 1)[-1].strip()
+                        break
+                if text:
+                    br = KB.get("businesses", {}).get("bruce_racing", {})
+                    if "services" not in br:
+                        br["services"] = []
+                    br["services"].append(text)
+                    if "businesses" not in KB:
+                        KB["businesses"] = {}
+                    if "bruce_racing" not in KB["businesses"]:
+                        KB["businesses"]["bruce_racing"] = {}
+                    KB["businesses"]["bruce_racing"]["services"] = br["services"]
+                    save_kb()
+                    result = f"Service added: {text}"
+                else:
+                    result = "What service? Say: add service [service name]"
+
+            elif any(x in msg for x in ["show faq","list faq","what questions"]):
+                faq = KB.get("faq", {})
+                if faq:
+                    lines = [f"- {v.get('question', k)}" for k, v in faq.items()]
+                    result = f"FAQs ({len(faq)} total):\n" + "\n".join(lines)
+                else:
+                    result = "No FAQs yet. Say: add faq [question]: [answer]"
+
+            elif any(x in msg for x in ["show personality","current personality"]):
+                result = json.dumps(KB.get("personality", {}), indent=2)
+
+            elif any(x in msg for x in ["show services","list services","what services"]):
+                svcs = KB.get("businesses", {}).get("bruce_racing", {}).get("services", [])
+                if svcs:
+                    result = f"Services ({len(svcs)}):\n" + "\n".join(f"- {s}" for s in svcs)
+                else:
+                    result = "No services listed. Say: add service [name]"
+
             # ======== HELP ========
             elif any(x in msg for x in ["help","what can","tools","capabilities","functions"]):
                 result = """SMS: send/read
@@ -760,7 +912,19 @@ WhatsApp: send messages/files
 Open apps
 Files/Shell
 Calendar/Events
-AI Answering Machine: on/off/greeting/messages"""
+AI Answering Machine: on/off/greeting/messages
+
+KNOWLEDGE & CUSTOMIZATION:
+learn this [fact] - teach me something
+forget this [fact] - remove a fact
+show knowledge - what I know
+set personality [desc] - change how I talk
+add faq [q]: [a] - add a question/answer
+show faq - list all FAQs
+add service [name] - add a business service
+set greeting [msg] - change call greeting
+set refusal [msg] - change privacy refusal
+show services - list all services"""
 
             else:
                 result = "I can do: SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, WhatsApp, files, calendar, and AI answering machine. What do you need?"
