@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BruceClaw Nexus — uses curl for API calls"""
+"""BruceClaw Nexus — handles both app formats"""
 import http.server, json, subprocess, os
 
 PORT = 8080
@@ -9,7 +9,7 @@ history = []
 
 def chat(message):
     history.append({"role": "user", "content": message})
-    system = "You are BruceClaw — enthusiastic and cheerful! Tools: list files, read file, run command, sms, contacts, calendar. Ask before dangerous actions."
+    system = "You are BruceClaw — enthusiastic and cheerful! Keep replies short."
     messages = [{"role": "system", "content": system}] + history[-10:]
     
     body = json.dumps({"model": "mimo-v2.5", "messages": messages})
@@ -20,7 +20,7 @@ def chat(message):
         "-H", "Content-Type: application/json",
         "-H", f"Authorization: Bearer {API_KEY}",
         "-d", body
-    ], capture_output=True, text=True, timeout=30)
+    ], capture_output=True, text=True, timeout=60)
     
     try:
         resp = json.loads(result.stdout)
@@ -42,16 +42,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length > 0 else {}
-            msg = body.get("message", "")
-            print(f">>> {msg}")
+            
+            # Handle both formats
+            if "message" in body:
+                msg = body["message"]
+            elif "messages" in body:
+                msg = body["messages"][-1].get("content", "")
+            else:
+                msg = ""
+            
+            print(f">>> {msg[:50]}")
             reply = chat(msg)
             print(f"<<< {reply[:80]}")
+            
+            # Send response in both formats
+            response = {
+                "reply": reply,
+                "choices": [{"message": {"content": reply}}],
+                "message": reply
+            }
+            
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps({"reply": reply, "choices": [{"message": {"content": reply}}]}).encode())
+            self.wfile.write(json.dumps(response).encode())
+            
         except Exception as e:
+            print(f"Error: {e}")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
