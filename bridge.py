@@ -182,6 +182,37 @@ class H(http.server.BaseHTTPRequestHandler):
                 result = json.dumps(Toolbox.get_memory())
             elif action == "list_tools":
                 result = json.dumps(Toolbox.TOOLS)
+            elif action == "battery":
+                r = subprocess.run(["termux-battery-status"], capture_output=True, text=True)
+                result = r.stdout or "Battery info unavailable"
+            elif action == "wifi":
+                r = subprocess.run(["termux-wifi-connectioninfo"], capture_output=True, text=True)
+                result = r.stdout or "WiFi info unavailable"
+            elif action == "storage":
+                r = subprocess.run(["df", "-h", "/data"], capture_output=True, text=True)
+                result = r.stdout or "Storage info unavailable"
+            elif action == "contacts":
+                r = subprocess.run(["termux-contact-list"], capture_output=True, text=True)
+                result = r.stdout or "No contacts"
+            elif action == "calendar":
+                r = subprocess.run(["termux-calendar-list"], capture_output=True, text=True)
+                result = r.stdout or "No events"
+            elif action == "sms":
+                r = subprocess.run(["termux-sms-list", "-l", "10"], capture_output=True, text=True)
+                result = r.stdout or "No messages"
+            elif action == "web":
+                import urllib.request
+                url = params.get("url", "https://example.com")
+                r = urllib.request.urlopen(url, timeout=10)
+                result = r.read()[:5000].decode(errors="ignore")
+            elif action == "install":
+                pkg = params.get("package", "")
+                r = subprocess.run(["pkg", "install", "-y", pkg], capture_output=True, text=True, timeout=60)
+                result = r.stdout or r.stderr or "Done"
+            elif action == "notify":
+                msg = params.get("message", "Hello")
+                subprocess.run(["termux-notification", "-t", "BruceClaw", "-c", msg])
+                result = "Notification sent"
             else:
                 result = f"Unknown action: {action}"
             
