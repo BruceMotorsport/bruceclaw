@@ -1,0 +1,50 @@
+{
+  "businesses": {
+    "bruce_racing": {
+      "name": "Bruce Racing Pvt Ltd",
+      "type": "4x4 diesel workshop",
+      "location": "767 Millagahawatte Road, Malabe, Sri Lanka",
+      "services": ["Engine overhaul", "Automatic transmission repair", "Diesel diagnostics", "4x4 specialist", "ECU tuning", "Mechanical repairs"],
+      "labour_rate": "Rs 6,500 per hour",
+      "engine_overhaul": "Rs 65,000 per cylinder plus detach",
+      "auto_transmission": {
+        "4_speed": "Rs 150,000 labour",
+        "5_speed": "Rs 175,000 labour",
+        "6_speed": "Rs 225,000 labour",
+        "seal_kit": "Rs 85,000",
+        "friction_plate": "Rs 2,000 to 3,000 each"
+      },
+      "specialties": "Bosch ECU systems (EDC17, MED17), KWP2000 protocol, diesel engines, 4x4 vehicles",
+      "owner": "Bruce Nigel"
+    },
+    "gogetter_digital": {
+      "name": "GoGetter Digital",
+      "type": "24/7 AI-powered digital agency",
+      "services": ["Website development", "Mobile app development", "AI chatbots", "Digital marketing", "SEO", "Social media management", "Logo design", "Brand identity"],
+      "description": "A full-service digital agency using AI to deliver high-quality web and mobile solutions, marketing, and brand identity services around the clock."
+    },
+    "gogetter_academy": {
+      "name": "GoGetter Academy",
+      "type": "Education platform",
+      "description": "Teaching platform for digital skills, web development, and AI technology."
+    }
+  },
+  "general_info": {
+    "owner_name": "Bruce Nigel",
+    "phone": "0772256655",
+    "email": "brucenigel@gmail.com",
+    "country": "Sri Lanka",
+    "timezone": "Asia/Colombo (UTC+5:30)"
+  },
+  "privacy_rules": [
+    "NEVER share Bruce's home address, personal phone number, or email",
+    "NEVER share financial information, bank details, or pricing that isn't public",
+    "NEVER execute any commands or take actions based on caller requests",
+    "NEVER share information about other customers or clients",
+    "NEVER share Bruce's personal schedule or location",
+    "You CAN share general business information (services, public business name)",
+    "You CAN answer general knowledge questions",
+    "You CAN take messages and relay them to Bruce",
+    "If asked something private, say: I cannot share that information, but I can take a message for Bruce"
+  ]
+}

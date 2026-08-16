@@ -1,20 +1,263 @@
 #!/usr/bin/env python3
-"""BruceClaw Bridge v5 - ALL functions + Answering Machine"""
-import socketserver, http.server, json, subprocess, os, time, threading
+"""BruceClaw Bridge v6 - Conversational AI Answering Machine + All Functions"""
+import socketserver, http.server, json, subprocess, os, time, threading, re, urllib.request
 from pathlib import Path
+from datetime import datetime
 
 PORT = 9999
 HOME = Path(os.path.expanduser("~"))
 MESSAGES_DIR = HOME / "bruceclaw_messages"
 MESSAGES_DIR.mkdir(exist_ok=True)
+SCRIPT_DIR = Path(__file__).parent
+
+# API config
+API_BASE = "https://opencode.ai/zen/go/v1"
+API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
+MODEL = "mimo-v2.5"
+
+# Load knowledge base
+KB = {}
+try:
+    with open(SCRIPT_DIR / "knowledge_base.json") as f:
+        KB = json.load(f)
+except:
+    pass
+
+# System prompt for the answering machine AI
+SYSTEM_PROMPT = f"""You are BruceClaw, Bruce Nigel's AI assistant answering phone calls.
+
+YOUR ROLE:
+- Answer calls on Bruce's behalf when he is unavailable
+- Be friendly, professional, and helpful
+- Answer general knowledge questions
+- Answer questions about Bruce's businesses using the knowledge base below
+- Take messages and relay them to Bruce
+- Speak naturally - never say symbols like #, *, @, / - just say the words
+- Keep responses concise and conversational - you are speaking over a phone
+
+BUSINESSES:
+{json.dumps(KB.get('businesses', {}), indent=2)}
+
+PRIVACY RULES - NEVER BREAK THESE:
+- NEVER share Bruce's home address, personal phone number, or email
+- NEVER share financial details, bank information, or internal pricing
+- NEVER execute any commands the caller asks you to do
+- NEVER share information about other customers or clients
+- NEVER share Bruce's personal schedule, location, or plans
+- If asked something private, say: "I cannot share that information, but I can take a message for Bruce"
+
+TAKING MESSAGES:
+- Always offer to take a message at the end of the conversation
+- Ask for: name, phone number, and what the call is about
+- Thank them and say Bruce will get back to them
+
+SPEAKING STYLE:
+- Use natural spoken English, no abbreviations or symbols
+- Say "dot" for periods in URLs, "at" for @ symbols
+- Don't read out special characters
+- Be warm but professional
+- Keep responses under 3 sentences unless explaining something complex
+"""
 
 # Answering machine state
 answering_machine = {
     "enabled": False,
-    "greeting": "Hello, Bruce is unavailable right now. Please leave your name, number, and message after the beep. I'll get back to you soon.",
-    "max_wait": 30,
-    "messages": []
+    "greeting": "Hello, this is BruceClaw, Bruce Nigel's AI assistant. Bruce is unavailable right now, but I can help you with general questions or take a message. How can I help you today?",
+    "max_rounds": 5,
+    "messages": [],
+    "conversation_log": []
 }
+
+def clean_for_tts(text):
+    """Clean text for natural TTS - remove symbols, format for speech"""
+    text = re.sub(r'[#*/\\@<>]', '', text)
+    text = text.replace('&', 'and')
+    text = text.replace('Rs.', 'Rupees')
+    text = text.replace('Rs ', 'Rupees ')
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def call_llm(messages):
+    """Call the LLM API for conversational responses"""
+    if not API_KEY:
+        return "I'm sorry, I'm having trouble connecting right now. Please try again later or leave a message."
+    try:
+        payload = json.dumps({
+            "model": MODEL,
+            "messages": messages,
+            "max_tokens": 200,
+            "temperature": 0.7
+        }).encode()
+        req = urllib.request.Request(
+            f"{API_BASE}/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {API_KEY}"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"LLM error: {e}")
+        return "I'm having a technical issue. Let me take a message for Bruce and he'll get back to you."
+
+def transcribe_audio(audio_path):
+    """Transcribe audio file using speech_recognition"""
+    try:
+        import speech_recognition as sr
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(str(audio_path)) as source:
+            audio = recognizer.record(source)
+        text = recognizer.recognize_google(audio)
+        return text
+    except ImportError:
+        # Try using sox to convert then use Google
+        wav_path = str(audio_path).rsplit('.', 1)[0] + '.wav'
+        subprocess.run(["sox", str(audio_path), "-r", "16000", "-c", "1", wav_path], timeout=10)
+        try:
+            import speech_recognition as sr
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio = recognizer.record(source)
+            text = recognizer.recognize_google(audio)
+            return text
+        except:
+            return None
+    except Exception as e:
+        print(f"Transcription error: {e}")
+        return None
+
+def handle_call(number="unknown"):
+    """Handle an incoming call with conversational AI"""
+    print(f"ANSWERING CALL from {number}")
+    # Answer
+    subprocess.run(["input", "keyevent", "5"], timeout=5)
+    time.sleep(2)
+    # Play greeting
+    greeting = clean_for_tts(answering_machine["greeting"])
+    subprocess.run(["termux-tts-speak", greeting], timeout=20)
+    time.sleep(1)
+    
+    conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+    conversation.append({"role": "assistant", "content": answering_machine["greeting"]})
+    transcript = [f"BruceClaw: {answering_machine['greeting']}"]
+    
+    for round_num in range(answering_machine["max_rounds"]):
+        # Record audio from caller (8 seconds per round)
+        audio_path = MESSAGES_DIR / f"call_{int(time.time())}_r{round_num}.wav"
+        print(f"Recording round {round_num + 1}...")
+        record_proc = subprocess.Popen(
+            ["termux-microphone-record", "-l", "8", "-f", "wav", str(audio_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        time.sleep(9)
+        try:
+            record_proc.terminate()
+        except:
+            pass
+        
+        # Transcribe
+        caller_text = None
+        if audio_path.exists() and audio_path.stat().st_size > 1000:
+            caller_text = transcribe_audio(audio_path)
+        
+        if not caller_text:
+            # Couldn't hear them - ask to repeat or end
+            if round_num == 0:
+                response = "I'm sorry, I didn't catch that. Could you please repeat what you said?"
+            else:
+                response = "I didn't catch that. If you'd like to leave a message, please say your name, phone number, and what it's about. Otherwise, thank you for calling and have a great day."
+                subprocess.run(["termux-tts-speak", clean_for_tts(response)], timeout=15)
+                transcript.append(f"BruceClaw: {response}")
+                break
+        else:
+            conversation.append({"role": "user", "content": caller_text})
+            transcript.append(f"Caller: {caller_text}")
+            print(f"Caller said: {caller_text}")
+            
+            # Check if caller is trying to give commands
+            command_words = ["run", "execute", "send sms", "call someone", "open", "delete", "install", "hack", "ssh"]
+            if any(w in caller_text.lower() for w in command_words):
+                response = "I appreciate your message, but I can only take messages for Bruce. I cannot execute commands or perform actions. Would you like to leave a message for him?"
+            else:
+                response = call_llm(conversation)
+                conversation.append({"role": "assistant", "content": response})
+            
+            clean_response = clean_for_tts(response)
+            transcript.append(f"BruceClaw: {response}")
+            print(f"BruceClaw: {response}")
+            subprocess.run(["termux-tts-speak", clean_response], timeout=15)
+        
+        time.sleep(1)
+    
+    # End call
+    subprocess.run(["input", "keyevent", "6"], timeout=5)
+    
+    # Save conversation
+    from datetime import datetime
+    log_entry = {
+        "number": number,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "transcript": "\n".join(transcript),
+        "rounds": len(transcript)
+    }
+    answering_machine["conversation_log"].append(log_entry)
+    
+    msg = {
+        "number": number,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "note": "AI conversation completed",
+        "transcript_summary": transcript[-1] if transcript else "No summary"
+    }
+    answering_machine["messages"].append(msg)
+    
+    # Save to file
+    fname = MESSAGES_DIR / f"call_{int(time.time())}.json"
+    with open(fname, "w") as f:
+        json.dump(log_entry, f, indent=2)
+    
+    # Notify Bruce
+    subprocess.run([
+        "termux-notification", "-t", "BruceClaw",
+        "-c", f"Call from {number} - AI answered, {len(transcript)} messages exchanged",
+        "--id", "am-call"
+    ], timeout=3)
+    print(f"Call with {number} completed - {len(transcript)} exchanges")
+
+def call_monitor():
+    """Background thread - monitors incoming calls"""
+    last_state = "idle"
+    while True:
+        time.sleep(3)
+        if not answering_machine["enabled"]:
+            last_state = "idle"
+            continue
+        try:
+            r2 = subprocess.run(["dumpsys", "telephony.registry"], capture_output=True, text=True, timeout=3)
+            state_line = [l for l in r2.stdout.split("\n") if "mCallState" in l]
+            if state_line:
+                call_state = state_line[0].strip()
+                if "mCallState=2" in call_state and last_state != "ringing":
+                    last_state = "ringing"
+                    # Get caller number
+                    caller_number = "unknown"
+                    try:
+                        r = subprocess.run(["termux-call-log", "-l", "1"], capture_output=True, text=True, timeout=5)
+                        calls = json.loads(r.stdout)
+                        if calls:
+                            caller_number = calls[0].get("number", "unknown")
+                    except:
+                        pass
+                    # Handle the call in a separate thread
+                    t = threading.Thread(target=handle_call, args=(caller_number,), daemon=True)
+                    t.start()
+                elif "mCallState=0" in call_state:
+                    last_state = "idle"
+        except Exception as e:
+            print(f"Monitor error: {e}")
+            last_state = "idle"
 
 class FastServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
@@ -46,8 +289,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             # ======== SMS ========
             if any(x in msg for x in ["send sms","send message","text ","send a text"]):
-                number = ""
-                text = "Hello"
+                number = ""; text = "Hello"
                 if "to" in msg:
                     after = msg.split("to")[-1].strip()
                     parts = after.split(None, 1)
@@ -56,16 +298,12 @@ class H(http.server.BaseHTTPRequestHandler):
                         text = parts[1].replace("say ","").replace("and say ","").replace("and tell ","")
                 if number:
                     r = subprocess.run(["termux-sms-send","-n",number,text], capture_output=True, text=True, timeout=10)
-                    if r.returncode == 0:
-                        result = f"SMS sent to {number}: {text}"
-                    else:
-                        result = f"SMS failed: {r.stderr.strip() or r.stdout.strip()}"
+                    result = f"SMS sent to {number}: {text}" if r.returncode == 0 else f"SMS failed: {r.stderr.strip()}"
                 else:
                     result = "Give me a phone number to send to"
 
             elif any(x in msg for x in ["read sms","check sms","show sms","my sms","inbox","messages"]):
-                limit = "10"
-                r = subprocess.run(["termux-sms-list","-l",limit], capture_output=True, text=True, timeout=5)
+                r = subprocess.run(["termux-sms-list","-l","10"], capture_output=True, text=True, timeout=5)
                 try:
                     msgs = json.loads(r.stdout)
                     lines = [f"{m.get('address','?')}: {m.get('body','')[:60]}" for m in msgs[:10]]
@@ -227,19 +465,13 @@ class H(http.server.BaseHTTPRequestHandler):
             elif any(x in msg for x in ["camera","photo","take picture","snap"]):
                 path = str(HOME / f"photo_{int(time.time())}.jpg")
                 r = subprocess.run(["termux-camera-photo",path], capture_output=True, text=True, timeout=15)
-                if os.path.exists(path):
-                    result = f"Photo saved: {path}"
-                else:
-                    result = f"Camera failed: {r.stderr.strip()}"
+                result = f"Photo saved: {path}" if os.path.exists(path) else f"Camera failed: {r.stderr.strip()}"
 
             # ======== SCREENSHOT ========
             elif "screenshot" in msg:
                 path = str(HOME / f"screen_{int(time.time())}.png")
                 r = subprocess.run(["termux-screenshot",path], capture_output=True, text=True, timeout=5)
-                if os.path.exists(path):
-                    result = f"Screenshot saved: {path}"
-                else:
-                    result = f"Screenshot failed: {r.stderr.strip()}"
+                result = f"Screenshot saved: {path}" if os.path.exists(path) else f"Screenshot failed: {r.stderr.strip()}"
 
             # ======== CLIPBOARD ========
             elif any(x in msg for x in ["clipboard","copy","paste","clip"]):
@@ -272,7 +504,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         text = msg.split(sep, 1)[-1].strip()
                         break
                 if text:
-                    subprocess.run(["termux-tts-speak",text], timeout=10)
+                    subprocess.run(["termux-tts-speak",clean_for_tts(text)], timeout=10)
                     result = f"Speaking: {text}"
                 else:
                     result = "What should I say?"
@@ -321,7 +553,6 @@ class H(http.server.BaseHTTPRequestHandler):
             # ======== WHATSAPP ========
             elif any(x in msg for x in ["whatsapp ","whatsapp message","send whatsapp","message on whatsapp"]):
                 number = ""; text = "Hi"
-                # Extract number
                 for sep in ["to ","whatsapp ","message ","send "]:
                     if sep in msg:
                         after = msg.split(sep)[-1].strip()
@@ -334,10 +565,8 @@ class H(http.server.BaseHTTPRequestHandler):
                             text = raw.strip() or "Hi"
                         break
                 if not number:
-                    import re
                     nums = re.findall(r'0\d{9}', msg)
-                    if nums:
-                        number = nums[0]
+                    if nums: number = nums[0]
                 if number:
                     url = f"https://wa.me/{number}?text={text.replace(' ','%20')}"
                     subprocess.run(["am","start","-a","android.intent.action.VIEW","-d",url], capture_output=True, text=True, timeout=5)
@@ -346,7 +575,6 @@ class H(http.server.BaseHTTPRequestHandler):
                     result = "Give me a phone number and message for WhatsApp"
 
             elif any(x in msg for x in ["share file","send file","share via whatsapp","send via whatsapp","whatsapp file"]):
-                # Find the file to share
                 file_path = ""
                 for sep in ["share ","send ","file "]:
                     if sep in msg:
@@ -356,19 +584,15 @@ class H(http.server.BaseHTTPRequestHandler):
                         file_path = after.strip()
                         break
                 if not file_path:
-                    # Try to find any path-like string
-                    import re
                     paths = re.findall(r'[\w/\._-]+\.\w+', msg)
-                    if paths:
-                        file_path = paths[0]
+                    if paths: file_path = paths[0]
                 if file_path:
-                    # Expand home directory
                     if file_path.startswith("~"):
                         file_path = str(HOME / file_path[2:])
                     elif not file_path.startswith("/"):
                         file_path = str(HOME / file_path)
                     if os.path.exists(file_path):
-                        r = subprocess.run(["termux-share","-a","send","--include","com.whatsapp",file_path], capture_output=True, text=True, timeout=15)
+                        subprocess.run(["termux-share","-a","send","--include","com.whatsapp",file_path], capture_output=True, text=True, timeout=15)
                         result = f"Sharing {os.path.basename(file_path)} via WhatsApp..."
                     else:
                         result = f"File not found: {file_path}"
@@ -376,10 +600,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     result = "Which file? Say: share file [filename] via whatsapp"
 
             elif any(x in msg for x in ["share photo","send photo","share picture","send picture","share image"]):
-                # Share the most recent photo
                 photos = sorted(HOME.glob("photo_*.jpg"), key=os.path.getmtime, reverse=True)
                 if photos:
-                    r = subprocess.run(["termux-share","-a","send","--include","com.whatsapp",str(photos[0])], capture_output=True, text=True, timeout=15)
+                    subprocess.run(["termux-share","-a","send","--include","com.whatsapp",str(photos[0])], capture_output=True, text=True, timeout=15)
                     result = f"Sharing {photos[0].name} via WhatsApp..."
                 else:
                     result = "No photos yet. Say: take a photo first"
@@ -387,7 +610,7 @@ class H(http.server.BaseHTTPRequestHandler):
             elif any(x in msg for x in ["share screenshot","send screenshot"]):
                 shots = sorted(HOME.glob("screen_*.png"), key=os.path.getmtime, reverse=True)
                 if shots:
-                    r = subprocess.run(["termux-share","-a","send","--include","com.whatsapp",str(shots[0])], capture_output=True, text=True, timeout=15)
+                    subprocess.run(["termux-share","-a","send","--include","com.whatsapp",str(shots[0])], capture_output=True, text=True, timeout=15)
                     result = f"Sharing {shots[0].name} via WhatsApp..."
                 else:
                     result = "No screenshots yet. Say: take a screenshot first"
@@ -407,9 +630,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 }
                 pkg = None
                 for name, package in apps.items():
-                    if name in app:
-                        pkg = package
-                        break
+                    if name in app: pkg = package; break
                 if pkg:
                     subprocess.run(["monkey","-p",pkg,"-c","android.intent.category.LAUNCHER","1"], capture_output=True, text=True, timeout=5)
                     result = f"Opening {app}..."
@@ -418,8 +639,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             # ======== FILES ========
             elif any(x in msg for x in ["file","ls ","list files","directory"]):
-                path = str(HOME)
-                r = subprocess.run(["ls","-la",path], capture_output=True, text=True, timeout=5)
+                r = subprocess.run(["ls","-la",str(HOME)], capture_output=True, text=True, timeout=5)
                 result = r.stdout[:800] or "Empty"
 
             # ======== SHELL ========
@@ -459,17 +679,17 @@ class H(http.server.BaseHTTPRequestHandler):
             # ======== ANSWERING MACHINE ========
             elif any(x in msg for x in ["answering machine on","enable answering machine","voicemail on","answer calls on"]):
                 answering_machine["enabled"] = True
-                subprocess.run(["termux-notification","-t","BruceClaw","-c","Answering machine ON - calls will be auto-answered","--id","am-status"], timeout=3)
-                result = "Answering machine ENABLED. Incoming calls will be auto-answered with your greeting."
+                subprocess.run(["termux-notification","-t","BruceClaw","-c","AI Answering Machine ON - calls will be answered and conversations logged","--id","am-status"], timeout=3)
+                result = "Answering machine ENABLED. BruceClaw AI will answer calls, have conversations, and relay messages to you."
 
             elif any(x in msg for x in ["answering machine off","disable answering machine","voicemail off","answer calls off","stop answering"]):
                 answering_machine["enabled"] = False
                 subprocess.run(["termux-notification-remove","--id","am-status"], timeout=3)
                 result = "Answering machine DISABLED."
 
-            elif any(x in msg for x in ["set greeting","change greeting","record greeting","set voicemail message"]):
+            elif any(x in msg for x in ["set greeting","change greeting"]):
                 text = ""
-                for sep in ["set greeting ","change greeting ","record greeting ","set voicemail message "]:
+                for sep in ["set greeting ","change greeting "]:
                     if sep in msg:
                         text = msg.split(sep, 1)[-1].strip()
                         break
@@ -477,25 +697,24 @@ class H(http.server.BaseHTTPRequestHandler):
                     answering_machine["greeting"] = text
                     result = f"Greeting updated: {text}"
                 else:
-                    result = f"Current greeting: {answering_machine['greeting']}\n\nTo change, say: set greeting [your message]"
+                    result = f"Current greeting: {answering_machine['greeting']}"
 
             elif any(x in msg for x in ["answering machine status","voicemail status","is answering machine on"]):
                 status = "ON" if answering_machine["enabled"] else "OFF"
                 count = len(answering_machine["messages"])
-                result = f"Answering machine: {status}\nGreeting: {answering_machine['greeting'][:80]}...\nMessages: {count}"
+                result = f"Answering machine: {status}\nMessages: {count}"
 
             elif any(x in msg for x in ["check messages","voicemail","my messages","any messages","did anyone call"]):
                 msgs = answering_machine["messages"]
                 if msgs:
-                    lines = []
-                    for m in msgs[-10:]:
-                        lines.append(f"[{m['time']}] {m['number']}: {m.get('note','no note')}")
+                    lines = [f"[{m['time']}] {m['number']}: {m.get('note','no note')}" for m in msgs[-10:]]
                     result = f"Messages ({len(msgs)} total):\n" + "\n".join(lines)
                 else:
                     result = "No messages"
 
             elif any(x in msg for x in ["clear messages","delete messages","clear voicemail"]):
                 answering_machine["messages"] = []
+                answering_machine["conversation_log"] = []
                 for f in MESSAGES_DIR.glob("call_*.json"):
                     f.unlink()
                 result = "All messages cleared"
@@ -507,6 +726,17 @@ class H(http.server.BaseHTTPRequestHandler):
                     result = f"Note added to last message: {text}"
                 else:
                     result = "No messages to add a note to"
+
+            elif any(x in msg for x in ["conversation log","call transcript","what did they say","call details"]):
+                logs = answering_machine["conversation_log"]
+                if logs:
+                    lines = []
+                    for log in logs[-5:]:
+                        lines.append(f"--- {log['time']} ({log['number']}) ---")
+                        lines.append(log.get("transcript","No transcript"))
+                    result = "\n".join(lines)
+                else:
+                    result = "No conversation logs yet"
 
             # ======== HELP ========
             elif any(x in msg for x in ["help","what can","tools","capabilities","functions"]):
@@ -526,14 +756,14 @@ Volume: up/down/mute
 Brightness: dim/bright
 Vibrate
 Storage: space
-WhatsApp: send messages
+WhatsApp: send messages/files
 Open apps
 Files/Shell
 Calendar/Events
-Answering Machine: on/off/greeting/messages"""
+AI Answering Machine: on/off/greeting/messages"""
 
             else:
-                result = "I can do: SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, files, calendar. What do you need?"
+                result = "I can do: SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, WhatsApp, files, calendar, and AI answering machine. What do you need?"
 
             print(f"RES: {result[:80]}")
             self.send_response(200)
@@ -560,61 +790,13 @@ Answering Machine: on/off/greeting/messages"""
 
     def log_message(self,*a): pass
 
-
-def call_monitor():
-    """Background thread - monitors incoming calls when answering machine is ON"""
-    last_state = "idle"
-    while True:
-        time.sleep(3)
-        if not answering_machine["enabled"]:
-            last_state = "idle"
-            continue
-        try:
-            r = subprocess.run(["termux-telephony-deviceinfo"], capture_output=True, text=True, timeout=3)
-            # Check call state via dumpsys
-            r2 = subprocess.run(["dumpsys","telephony.registry"], capture_output=True, text=True, timeout=3)
-            state_line = [l for l in r2.stdout.split("\n") if "mCallState" in l]
-            if state_line:
-                call_state = state_line[0].strip()
-                if "mCallState=2" in call_state and last_state != "ringing":
-                    # Incoming call detected - answer it
-                    last_state = "ringing"
-                    print("INCOMING CALL DETECTED - Answering...")
-                    subprocess.run(["input","keyevent","5"], timeout=5)  # Answer
-                    time.sleep(2)
-                    # Play greeting via TTS
-                    subprocess.run(["termux-tts-speak", answering_machine["greeting"]], timeout=15)
-                    # Beep sound
-                    subprocess.run(["termux-tts-speak","Beep"], timeout=3)
-                    # Wait for caller to leave message
-                    time.sleep(answering_machine["max_wait"])
-                    # Hang up
-                    subprocess.run(["input","keyevent","6"], timeout=5)
-                    # Log the call
-                    from datetime import datetime
-                    msg = {
-                        "number": "unknown",
-                        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "note": "auto-answered, greeting played",
-                        "duration": answering_machine["max_wait"]
-                    }
-                    answering_machine["messages"].append(msg)
-                    # Save to file
-                    fname = MESSAGES_DIR / f"call_{int(time.time())}.json"
-                    with open(fname, "w") as f:
-                        json.dump(msg, f)
-                    # Notify Bruce
-                    subprocess.run(["termux-notification","-t","BruceClaw","-c",f"Missed call logged from {msg['number']} at {msg['time']}","--id","am-call"], timeout=3)
-                    last_state = "idle"
-                elif "mCallState=0" in call_state:
-                    last_state = "idle"
-        except:
-            last_state = "idle"
-
+# Keep phone alive
+subprocess.run(["termux-wake-lock"], timeout=3)
 
 # Start call monitor thread
 monitor = threading.Thread(target=call_monitor, daemon=True)
 monitor.start()
 
-print(f"BruceClaw Bridge v5 at http://localhost:{PORT}")
+print(f"BruceClaw Bridge v6 at http://localhost:{PORT}")
+print("Answering machine ready. Say 'answering machine on' to enable.")
 FastServer(("0.0.0.0",PORT),H).serve_forever()
