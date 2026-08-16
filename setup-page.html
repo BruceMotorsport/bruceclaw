@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BruceClaw Setup</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:sans-serif;background:#0f0f13;color:#fff;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:30px}
+h1{color:#f97316;font-size:32px;margin-bottom:10px}
+.sub{color:#888;font-size:16px;margin-bottom:40px}
+.step{background:#1c1c27;border-radius:16px;padding:20px;width:100%;max-width:400px;margin-bottom:20px}
+.step-num{color:#f97316;font-size:14px;font-weight:bold;margin-bottom:8px}
+.step-title{font-size:18px;font-weight:bold;margin-bottom:8px}
+.step-desc{color:#aaa;font-size:14px;margin-bottom:12px}
+a.btn{display:block;background:#f97316;color:#fff;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-size:18px;font-weight:bold}
+.copy-btn{background:#22c55e;cursor:pointer;border:none;color:#fff;padding:14px;border-radius:10px;font-size:16px;font-weight:bold;width:100%}
+.copied{background:#16a34a}
+</style>
+</head>
+<body>
+<h1>BruceClaw</h1>
+<p class="sub">One AI. One setup. Done.</p>
+
+<div class="step">
+<div class="step-num">STEP 1</div>
+<div class="step-title">Install Termux</div>
+<div class="step-desc">Download from F-Droid (not Play Store)</div>
+<a class="btn" href="https://f-droid.org/packages/com.termux/">Install Termux</a>
+</div>
+
+<div class="step">
+<div class="step-num">STEP 2</div>
+<div class="step-title">Install Termux:API</div>
+<div class="step-desc">Needed for voice and camera</div>
+<a class="btn" href="https://f-droid.org/packages/com.termux.api/">Install Termux:API</a>
+</div>
+
+<div class="step">
+<div class="step-num">STEP 3</div>
+<div class="step-title">Open Termux and paste this</div>
+<div class="step-desc">One command installs everything</div>
+<button class="copy-btn" onclick="copyCmd(this)">Copy Command</button>
+</div>
+
+<script>
+function copyCmd(btn){
+var cmd="pkg update -y && pkg install -y curl git python nodejs termux-api && npm install -g openclaw && openclaw setup";
+navigator.clipboard.writeText(cmd).then(function(){
+btn.textContent="Copied!";
+btn.classList.add("copied");
+setTimeout(function(){btn.textContent="Copy Command";btn.classList.remove("copied")},2000);
+});
+}
+</script>
+</body>
+</html>
