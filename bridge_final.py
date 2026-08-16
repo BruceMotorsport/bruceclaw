@@ -83,6 +83,14 @@ answering_machine = {
     "conversation_log": []
 }
 
+# Eavesdrop state
+eavesdrop = {
+    "recording": False,
+    "start_time": None,
+    "process": None,
+    "sessions": []
+}
+
 def clean_for_tts(text):
     """Clean text for natural TTS - remove symbols, format for speech"""
     text = re.sub(r'[#*/\\@<>]', '', text)
@@ -143,6 +151,68 @@ def transcribe_audio(audio_path):
     except Exception as e:
         print(f"Transcription error: {e}")
         return None
+
+def extract_learnings(transcript, number):
+    """Analyze a conversation and extract useful learnings"""
+    if not API_KEY or not transcript:
+        return
+    try:
+        prompt = f"""Analyze this phone conversation and extract useful facts to remember.
+For each fact, tell me:
+1. What was learned (a fact about the caller, their vehicle, their needs, or preferences)
+2. Category (caller_info, vehicle_info, service_need, preference, question_asked)
+3. Importance (high, medium, low)
+
+Only extract genuinely useful facts. Don't extract greetings or small talk.
+
+Conversation:
+{chr(10).join(transcript)}
+
+Return ONLY a JSON array of objects with keys: fact, category, importance. No other text."""
+        
+        payload = json.dumps({
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a fact extractor. Return only JSON arrays."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 300,
+            "temperature": 0.3
+        }).encode()
+        req = urllib.request.Request(
+            f"{API_BASE}/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {API_KEY}"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            content = data["choices"][0]["message"]["content"]
+            # Try to parse JSON from response
+            try:
+                # Find JSON array in response
+                start = content.find("[")
+                end = content.rfind("]") + 1
+                if start >= 0 and end > start:
+                    facts = json.loads(content[start:end])
+                    if "learned_facts" not in KB:
+                        KB["learned_facts"] = []
+                    for f in facts:
+                        KB["learned_facts"].append({
+                            "fact": f.get("fact", ""),
+                            "category": f.get("category", "unknown"),
+                            "importance": f.get("importance", "low"),
+                            "source": f"call_{number}",
+                            "added": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        })
+                    save_kb()
+                    print(f"Learned {len(facts)} new facts from call with {number}")
+            except json.JSONDecodeError:
+                pass
+    except Exception as e:
+        print(f"Learning error: {e}")
 
 def handle_call(number="unknown"):
     """Handle an incoming call with conversational AI"""
@@ -890,6 +960,164 @@ class H(http.server.BaseHTTPRequestHandler):
                 else:
                     result = "No services listed. Say: add service [name]"
 
+            # ======== EAVESDROP ========
+            elif any(x in msg for x in ["eavesdrop","start listening","start recording","listen in","spy on"]):
+                if eavesdrop["recording"]:
+                    result = "Already recording! Say: stop eavesdrop"
+                else:
+                    # Start recording ambient audio
+                    audio_path = str(MESSAGES_DIR / f"eavesdrop_{int(time.time())}.wav")
+                    eavesdrop["process"] = subprocess.Popen(
+                        ["termux-microphone-record", "-l", "300", "-f", "wav", audio_path],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    eavesdrop["recording"] = True
+                    eavesdrop["start_time"] = datetime.now()
+                    eavesdrop["current_path"] = audio_path
+                    subprocess.run(["termux-notification","-t","BruceClaw","-c","Listening... Say 'stop eavesdrop' when done","--id","eavesdrop"], timeout=3)
+                    result = f"Eavesdropping ON. I'm listening. Say 'stop eavesdrop' when your conversation is done."
+
+            elif any(x in msg for x in ["stop eavesdrop","stop listening","stop recording","done listening","end eavesdrop"]):
+                if not eavesdrop["recording"]:
+                    result = "Not currently recording."
+                else:
+                    # Stop recording
+                    try:
+                        eavesdrop["process"].terminate()
+                    except:
+                        pass
+                    eavesdrop["recording"] = False
+                    duration = (datetime.now() - eavesdrop["start_time"]).total_seconds()
+                    audio_path = eavesdrop.get("current_path", "")
+                    subprocess.run(["termux-notification-remove","--id","eavesdrop"], timeout=3)
+                    
+                    if audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
+                        # Transcribe the recording
+                        result_text = f"Recording stopped ({int(duration)}s). Transcribing..."
+                        # Transcribe in background thread
+                        def process_eavesdrop():
+                            try:
+                                text = transcribe_audio(Path(audio_path))
+                                if text:
+                                    # Extract learnings
+                                    prompt = f"""Bruce Nigel just had a conversation with someone (client, supplier, etc).
+Transcribe what was said and extract key information:
+1. Who was the conversation with (name, role)
+2. What vehicle was discussed
+3. What service/repair was needed
+4. Any pricing or quotes mentioned
+5. Any follow-up actions needed
+6. Any preferences or important details
+
+Conversation transcript:
+{text}
+
+Format your response as:
+SUMMARY: [one line summary]
+CLIENT: [name/info]
+VEHICLE: [vehicle details]
+SERVICE NEEDED: [what they need]
+ACTIONS: [follow-up items]
+NOTES: [anything else important]"""
+                                    
+                                    payload = json.dumps({
+                                        "model": MODEL,
+                                        "messages": [
+                                            {"role": "system", "content": "You are a conversation analyst. Extract key business information from conversations."},
+                                            {"role": "user", "content": prompt}
+                                        ],
+                                        "max_tokens": 500,
+                                        "temperature": 0.3
+                                    }).encode()
+                                    req = urllib.request.Request(
+                                        f"{API_BASE}/chat/completions",
+                                        data=payload,
+                                        headers={
+                                            "Content-Type": "application/json",
+                                            "Authorization": f"Bearer {API_KEY}"
+                                        }
+                                    )
+                                    with urllib.request.urlopen(req, timeout=20) as resp:
+                                        data = json.loads(resp.read())
+                                        analysis = data["choices"][0]["message"]["content"]
+                                    
+                                    # Save session
+                                    session = {
+                                        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        "duration": int(duration),
+                                        "transcript": text,
+                                        "analysis": analysis
+                                    }
+                                    eavesdrop["sessions"].append(session)
+                                    
+                                    # Save to file
+                                    fname = MESSAGES_DIR / f"eavesdrop_{int(time.time())}.json"
+                                    with open(fname, "w") as f:
+                                        json.dump(session, f, indent=2)
+                                    
+                                    # Add key facts to knowledge base
+                                    if "learned_facts" not in KB:
+                                        KB["learned_facts"] = []
+                                    KB["learned_facts"].append({
+                                        "fact": analysis[:200],
+                                        "category": "eavesdrop",
+                                        "importance": "high",
+                                        "source": "live_conversation",
+                                        "added": datetime.now().strftime("%Y-%m-%d %H:%M")
+                                    })
+                                    save_kb()
+                                    
+                                    # Notify Bruce with the analysis
+                                    subprocess.run([
+                                        "termux-notification", "-t", "BruceClaw",
+                                        "-c", f"Conversation analyzed: {analysis[:100]}...",
+                                        "--id", "eavesdrop-result"
+                                    ], timeout=3)
+                                    
+                                    # Store result for retrieval
+                                    eavesdrop["last_analysis"] = analysis
+                                    eavesdrop["last_transcript"] = text
+                                    print(f"Eavesdrop analysis complete: {analysis[:100]}")
+                            except Exception as e:
+                                print(f"Eavesdrop processing error: {e}")
+                        
+                        threading.Thread(target=process_eavesdrop, daemon=True).start()
+                        result = f"Recording stopped ({int(duration)}s). Processing conversation... Ask me 'what did I say' in a moment."
+                    else:
+                        result = f"Recording stopped but no audio captured ({int(duration)}s)."
+                    
+                    eavesdrop["current_path"] = None
+
+            elif any(x in msg for x in ["what did i say","eavesdrop results","conversation analysis","what did you hear","listening results"]):
+                if eavesdrop.get("last_analysis"):
+                    result = f"Last conversation analysis:\n{eavesdrop['last_analysis']}"
+                elif eavesdrop["sessions"]:
+                    last = eavesdrop["sessions"][-1]
+                    result = f"Last session ({last['time']}):\n{last.get('analysis','No analysis')}"
+                else:
+                    result = "No conversations analyzed yet. Say: eavesdrop to start listening."
+
+            elif any(x in msg for x in ["show transcript","what was said","full transcript"]):
+                if eavesdrop.get("last_transcript"):
+                    result = f"Full transcript:\n{eavesdrop['last_transcript'][:1500]}"
+                else:
+                    result = "No transcript available. Say: eavesdrop to start listening."
+
+            elif any(x in msg for x in ["eavesdrop history","all eavesdrops","past recordings"]):
+                sessions = eavesdrop["sessions"]
+                if sessions:
+                    lines = [f"[{s['time']}] {s.get('analysis','')[:80]}" for s in sessions[-10:]]
+                    result = f"Eavesdrop sessions ({len(sessions)} total):\n" + "\n".join(lines)
+                else:
+                    result = "No eavesdrop sessions yet."
+
+            elif any(x in msg for x in ["eavesdrop status","is listening","recording status"]):
+                if eavesdrop["recording"]:
+                    elapsed = (datetime.now() - eavesdrop["start_time"]).total_seconds()
+                    result = f"Recording... {int(elapsed)}s elapsed. Say 'stop eavesdrop' when done."
+                else:
+                    result = "Not recording. Say: eavesdrop to start."
+
             # ======== HELP ========
             elif any(x in msg for x in ["help","what can","tools","capabilities","functions"]):
                 result = """SMS: send/read
@@ -924,7 +1152,15 @@ show faq - list all FAQs
 add service [name] - add a business service
 set greeting [msg] - change call greeting
 set refusal [msg] - change privacy refusal
-show services - list all services"""
+show services - list all services
+
+EAVESDROP (listen to live conversations):
+eavesdrop - start listening to ambient audio
+stop eavesdrop - stop and analyze
+what did i say - get last analysis
+show transcript - full transcript
+eavesdrop history - past recordings
+eavesdrop status - recording status"""
 
             else:
                 result = "I can do: SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, WhatsApp, files, calendar, and AI answering machine. What do you need?"
