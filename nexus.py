@@ -16,6 +16,24 @@ import time
 PORT = 8080
 HOME = os.path.expanduser("~")
 
+class SecurityGuard:
+    DANGEROUS = ["rm -rf", "sudo", "chmod 777", "eval", "nc ", "netcat"]
+    SAFE_PATHS = [os.path.expanduser("~/bruceclaw"), os.path.expanduser("~/Documents"), os.path.expanduser("~/Downloads")]
+    
+    @staticmethod
+    def check_command(cmd):
+        for d in SecurityGuard.DANGEROUS:
+            if d in cmd.lower():
+                return False, "BLOCKED: Dangerous command"
+        return True, "OK"
+    
+    @staticmethod
+    def check_path(path):
+        for safe in SecurityGuard.SAFE_PATHS:
+            if path.startswith(safe):
+                return True, "OK"
+        return False, "BLOCKED: Path not approved"
+
 class NexusTool:
     """Base tool class"""
     def __init__(self, name, description):
@@ -57,6 +75,9 @@ class CommandTool(NexusTool):
     
     def execute(self, params):
         cmd = params.get("command", "")
+        allowed, msg = SecurityGuard.check_command(cmd)
+        if not allowed:
+            return {"error": msg}
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
         return {"stdout": result.stdout[:5000], "stderr": result.stderr[:1000], "exit_code": result.returncode}
 
