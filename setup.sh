@@ -1,6 +1,6 @@
 #!/bin/bash
-echo "Installing BruceClaw..."
-pkg update -y && pkg install -y curl git python nodejs termux-api
-npm install -g openclaw
-openclaw setup
-echo "Done! Type 'openclaw' to start"
+echo "Setting up BruceClaw..."
+curl -sL https://raw.githubusercontent.com/BruceMotorsport/bruceclaw/master/bridge.py -o ~/bridge.py
+echo "Bridge downloaded!"
+echo "Starting BruceClaw..."
+python3 ~/bridge.py
