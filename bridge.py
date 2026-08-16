@@ -147,7 +147,13 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            # Handle both formats: action-based and message-based
+            message = body.get("message", body.get("messages", [{}])[-1].get("content", ""))
             action = body.get("action", "")
+            if not action and message:
+                msg = message.lower()
+                if "tool" in msg or "skill" in msg or "capabilit" in msg or "mcp" in msg or "memory" in msg or "list" in msg:
+                    action = "list_tools"
             params = body.get("params", {})
             
             result = ""
