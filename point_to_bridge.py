@@ -1,46 +1,47 @@
 #!/usr/bin/env python3
-"""Point OpenClaw to use bridge as LLM proxy"""
+"""Point OpenClaw to use bridge as LLM proxy via correct config field"""
 import json, os
 from pathlib import Path
 
 HOME = Path(os.path.expanduser("~"))
 config_path = HOME / ".openclaw" / "openclaw.json"
 
-if not config_path.exists():
-    print("Config not found at", config_path)
-    exit(1)
-
-with open(config_path) as f:
-    config = json.load(f)
+# Load or create config
+if config_path.exists():
+    with open(config_path) as f:
+        config = json.load(f)
+else:
+    config = {}
+    config_path.parent.mkdir(parents=True, exist_ok=True)
 
 print("Current config:")
 print(json.dumps(config, indent=2)[:2000])
 
-# Change the API base URL to point to our bridge
-# The bridge runs on localhost:9999 and has /v1/chat/completions endpoint
-if "providers" in config:
-    for name, provider in config["providers"].items():
-        if "base_url" in provider or "apiBase" in provider or "url" in provider:
-            old_url = provider.get("base_url", provider.get("apiBase", provider.get("url", "")))
-            print(f"\nProvider '{name}' current URL: {old_url}")
-            # Point to our bridge
-            provider["base_url"] = "http://localhost:9999/v1"
-            print(f"Changed to: http://localhost:9999/v1")
-        elif "apiBase" in provider:
-            print(f"\nProvider '{name}' current apiBase: {provider['apiBase']}")
-            provider["apiBase"] = "http://localhost:9999/v1"
-            print(f"Changed to: http://localhost:9999/v1")
+# Set the provider baseUrl to point to our bridge
+if "models" not in config:
+    config["models"] = {}
+if "providers" not in config["models"]:
+    config["models"]["providers"] = {}
 
-# Also try top-level apiBase or baseURL
-for field in ["apiBase", "baseURL", "base_url", "api_base"]:
-    if field in config:
-        old = config[field]
-        config[field] = "http://localhost:9999/v1"
-        print(f"\nTop-level {field}: {old} -> http://localhost:9999/v1")
+# Add/update the openai provider to point to our bridge
+config["models"]["providers"]["openai"] = {
+    "baseUrl": "http://localhost:9999/v1",
+    "apiKey": "dummy"
+}
+
+# Also set workspace
+if "agents" not in config:
+    config["agents"] = {}
+if "defaults" not in config["agents"]:
+    config["agents"]["defaults"] = {}
+config["agents"]["defaults"]["workspace"] = str(HOME / ".openclaw" / "workspace")
 
 with open(config_path, "w") as f:
     json.dump(config, f, indent=2)
 
-print("\nConfig updated! Force stop and reopen BruceClaw app.")
+print("\nUpdated config:")
+print(json.dumps(config, indent=2)[:2000])
+
+print("\nDone! Force stop and reopen BruceClaw app.")
 print("The app will now use the bridge as its LLM proxy.")
-print("The bridge adds the system prompt with all capabilities before sending to the real LLM.")
+print("The bridge injects the system prompt with all capabilities.")
