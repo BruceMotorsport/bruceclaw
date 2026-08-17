@@ -562,12 +562,22 @@ def call_monitor():
             if not calls:
                 continue
             for call in calls:
-                call_time = call.get("date", "")
-                call_number = call.get("number", "unknown")
-                call_type = str(call.get("type", "")).lower()
+                # Handle both dict and string formats
+                if isinstance(call, dict):
+                    call_time = call.get("date", "")
+                    call_number = call.get("number", "unknown")
+                    call_type = str(call.get("type", "")).lower()
+                elif isinstance(call, str):
+                    # String format - try to parse
+                    call_time = call[:19] if len(call) > 19 else call
+                    call_number = call.split()[-1] if call.split() else "unknown"
+                    call_type = call.lower()
+                else:
+                    continue
+                    
                 if call_time == last_call_time:
                     break
-                if "incoming" in call_type or call_type == "1":
+                if "incoming" in call_type or "1" in str(call_type):
                     last_call_time = call_time
                     print(f"INCOMING CALL from {call_number}")
                     t = threading.Thread(target=handle_call, args=(call_number,), daemon=True)
