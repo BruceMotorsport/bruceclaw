@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""BruceClaw Direct Control - Bypasses LLM, executes commands directly"""
-import socketserver, http.server, json, subprocess, os, time, threading, re
+"""BruceClaw Bridge v10 - Walkie-Talkie proxy
+Sits between UI and Mimo. Injects tool knowledge into every message."""
+import socketserver, http.server, json, subprocess, os, time, threading, re, urllib.request
 from pathlib import Path
 from datetime import datetime
 
@@ -10,9 +11,28 @@ MESSAGES_DIR = HOME / "bruceclaw_messages"
 MESSAGES_DIR.mkdir(exist_ok=True)
 SCRIPT_DIR = Path(__file__).parent
 
-# Conversation memory
-HISTORY_FILE = HOME / "bruceclaw_history.json"
+# Load API key
+API_KEY = ""
+for p in [HOME / ".bruceclaw_config.json", HOME / ".openclaw" / "openclaw.json"]:
+    if p.exists():
+        try:
+            with open(p) as f:
+                c = json.load(f)
+            API_KEY = c.get("api_key", c.get("providers",{}).get("openai",{}).get("apiKey",""))
+            if API_KEY: break
+        except: pass
+
+# Knowledge base
+KB = {}
+try:
+    with open(SCRIPT_DIR / "knowledge_base.json") as f:
+        KB = json.load(f)
+except: pass
+
+# States
+answering_machine = {"enabled": False, "messages": [], "conversation_log": []}
 conversation_history = []
+HISTORY_FILE = HOME / "bruceclaw_history.json"
 
 def load_history():
     global conversation_history
@@ -20,7 +40,7 @@ def load_history():
         try:
             with open(HISTORY_FILE) as f:
                 conversation_history = json.load(f)
-        except: conversation_history = []
+        except: pass
 
 def save_history():
     with open(HISTORY_FILE, "w") as f:
@@ -30,353 +50,187 @@ def add_history(role, content):
     conversation_history.append({"role": role, "content": content, "time": datetime.now().strftime("%H:%M")})
     save_history()
 
-# Knowledge base
-KB = {}
-try:
-    with open(SCRIPT_DIR / "knowledge_base.json") as f:
-        KB = json.load(f)
-except: pass
-
-# Answering machine state
-answering_machine = {"enabled": False, "messages": [], "conversation_log": []}
-
-def clean_for_tts(text):
-    text = re.sub(r'[#*/\\@<>{}|~`]', '', text)
-    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
-    text = re.sub(r'[\u2190-\u21FF\u2600-\u26FF\u2700-\u27BF]', '', text)
-    text = text.replace('&', 'and')
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
 def speak(text):
-    cleaned = clean_for_tts(text)
+    cleaned = re.sub(r'[#*/\\@<>{}|~`]', '', text)
+    cleaned = re.sub(r'[\U00010000-\U0010ffff]', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     try: subprocess.run(["termux-tts-speak", cleaned], timeout=15)
     except: pass
 
-def execute(msg):
-    """Execute a command directly"""
-    msg_lower = msg.lower().strip()
-    print(f"CMD: {msg_lower[:80]}")
+# ======== TOOL EXECUTION ========
+def run_tool(tool_str):
+    """Execute a tool command"""
+    print(f"TOOL: {tool_str}")
+    try:
+        parts = tool_str.split(":", 2)
+        tool = parts[0].strip()
+        args = parts[1].strip() if len(parts) > 1 else ""
 
-    # ANSWERING MACHINE - highest priority
-    if any(x in msg_lower for x in ["answering machine on","enable answering machine","answer calls on","answer my calls","set up answering machine","auto answer"]):
-        answering_machine["enabled"] = True
-        subprocess.run(["termux-notification","-t","BruceClaw","-c","Answering machine ON - answering calls as Jessica","--id","am-status"], timeout=3)
-        return "Answering machine ENABLED. I will now answer your incoming calls as Jessica, Bruce's assistant at Bruce Racing. When someone calls, I'll greet them, answer their questions, and take messages."
+        if tool == "answering_machine":
+            answering_machine["enabled"] = args == "on"
+            return f"Answering machine {'enabled' if args == 'on' else 'disabled'}"
 
-    if any(x in msg_lower for x in ["answering machine off","disable answering machine","stop answering","stop answering machine","turn off answering"]):
-        answering_machine["enabled"] = False
-        subprocess.run(["termux-notification-remove","--id","am-status"], timeout=3)
-        return "Answering machine DISABLED."
+        elif tool == "send_sms":
+            number, text = args.split(",", 1) if "," in args else (args, "Hello")
+            subprocess.run(["termux-sms-send", "-n", number.strip(), text.strip()], timeout=10)
+            return f"SMS sent to {number.strip()}: {text.strip()}"
 
-    if any(x in msg_lower for x in ["answering machine status","voicemail status","is answering machine on"]):
-        status = "ON" if answering_machine["enabled"] else "OFF"
-        count = len(answering_machine["messages"])
-        return f"Answering machine: {status}\nMessages: {count}"
+        elif tool == "make_call":
+            subprocess.run(["am", "start", "-a", "android.intent.action.DIAL", "-d", f"tel:{args}"], timeout=5)
+            return f"Calling {args}..."
 
-    if any(x in msg_lower for x in ["set greeting","change greeting"]):
-        text = ""
-        for sep in ["set greeting ","change greeting "]:
-            if sep in msg_lower: text = msg.split(sep, 1)[-1].strip(); break
-        if text: return f"Greeting updated: {text}"
-        return "What greeting? Say: set greeting [your message]"
-
-    if any(x in msg_lower for x in ["check messages","voicemail","my messages","any messages","did anyone call"]):
-        msgs = answering_machine["messages"]
-        if msgs:
-            lines = [f"[{m['time']}] {m['number']}: {m.get('note','no note')}" for m in msgs[-10:]]
-            return f"Messages ({len(msgs)} total):\n" + "\n".join(lines)
-        return "No messages"
-
-    if any(x in msg_lower for x in ["conversation log","what did they say","call details"]):
-        logs = answering_machine["conversation_log"]
-        if logs:
-            lines = []
-            for log in logs[-5:]:
-                lines.append(f"--- {log['time']} ({log['number']}) ---")
-                lines.append(log.get("transcript","No transcript"))
-            return "\n".join(lines)
-        return "No conversation logs yet"
-
-    # SMS
-    if any(x in msg_lower for x in ["send sms","send message","text ","send a text"]):
-        number = ""; text = "Hello"
-        if "to" in msg_lower:
-            after = msg_lower.split("to")[-1].strip()
-            parts = after.split(None, 1)
-            number = parts[0].replace(" ","").replace("-","").replace("+","")
-            if len(parts) > 1:
-                text = parts[1].replace("say ","").replace("and say ","")
-        if number:
-            r = subprocess.run(["termux-sms-send","-n",number,text], capture_output=True, text=True, timeout=10)
-            return f"SMS sent to {number}: {text}" if r.returncode == 0 else f"SMS failed"
-        return "Give me a phone number to send to"
-
-    if any(x in msg_lower for x in ["read sms","check sms","show sms","my sms","inbox"]):
-        r = subprocess.run(["termux-sms-list","-l","10"], capture_output=True, text=True, timeout=5)
-        try:
-            msgs = json.loads(r.stdout)
-            lines = [f"{m.get('address','?')}: {m.get('body','')[:60]}" for m in msgs[:10]]
-            return "\n".join(lines) if lines else "No messages"
-        except: return "No messages"
-
-    # CALLS
-    if any(x in msg_lower for x in ["call ","dial ","phone call","ring "]):
-        number = ""
-        for sep in ["to ","call ","dial ","ring "]:
-            if sep in msg_lower:
-                after = msg_lower.split(sep)[-1].strip()
-                number = after.split()[0].replace(" ","").replace("-","")
-                break
-        if number:
-            subprocess.run(["am","start","-a","android.intent.action.DIAL","-d",f"tel:{number}"], timeout=5)
-            return f"Calling {number}..."
-        return "Give me a phone number"
-
-    if any(x in msg_lower for x in ["end call","hang up","disconnect"]):
-        subprocess.run(["input","keyevent","6"], timeout=5)
-        return "Call ended"
-
-    if any(x in msg_lower for x in ["answer call","pick up","accept call"]):
-        subprocess.run(["input","keyevent","5"], timeout=5)
-        return "Call answered"
-
-    if any(x in msg_lower for x in ["call log","call history","recent calls","who called"]):
-        r = subprocess.run(["termux-call-log","-l","10"], capture_output=True, text=True, timeout=5)
-        try:
-            calls = json.loads(r.stdout)
-            lines = [f"{c.get('number','?')} ({c.get('type','?')}) {c.get('date','?')}" for c in calls[:10]]
-            return "\n".join(lines) if lines else "No call history"
-        except: return "No call history"
-
-    # PHONE STATE
-    if any(x in msg_lower for x in ["battery","power","charge"]):
-        r = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=3)
-        try:
+        elif tool == "battery":
+            r = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=3)
             d = json.loads(r.stdout)
-            if "voltage" in msg_lower: return f"{d.get('voltage',0)/1000:.2f}V"
-            elif "percent" in msg_lower or "level" in msg_lower: return f"{d.get('percentage','?')}%"
-            return f"Battery: {d.get('percentage','?')}% at {d.get('voltage',0)/1000:.1f}V, {d.get('temperature','?')}C"
-        except: return "N/A"
+            return f"Battery: {d.get('percentage','?')}% at {d.get('voltage',0)/1000:.1f}V"
 
-    if any(x in msg_lower for x in ["sim","imei","phone info","network"]):
-        r = subprocess.run(["termux-telephony-deviceinfo"], capture_output=True, text=True, timeout=5)
-        try:
+        elif tool == "camera":
+            path = str(HOME / f"photo_{int(time.time())}.jpg")
+            subprocess.run(["termux-camera-photo", path], timeout=15)
+            return f"Photo saved: {path}" if os.path.exists(path) else "Camera failed"
+
+        elif tool == "location":
+            r = subprocess.run(["termux-location", "-p", "gps"], capture_output=True, text=True, timeout=10)
             d = json.loads(r.stdout)
-            return f"IMEI: {d.get('imei1','?')}\nNetwork: {d.get('network_operator_name','?')}\nSIM: {d.get('sim_operator_name','?')}"
-        except: return "N/A"
+            return f"Location: {d.get('latitude','?')}, {d.get('longitude','?')}"
 
-    # CONTACTS
-    if any(x in msg_lower for x in ["contact","contacts","address book","phonebook"]):
-        r = subprocess.run(["termux-contact-list"], capture_output=True, text=True, timeout=5)
-        try:
+        elif tool == "contacts":
+            r = subprocess.run(["termux-contact-list"], capture_output=True, text=True, timeout=5)
             contacts = json.loads(r.stdout)
-            if "search" in msg_lower or "find" in msg_lower:
-                q = msg_lower.split("search")[-1].split("find")[-1].strip()
-                matches = [c for c in contacts if q in c.get("name","").lower()]
-                lines = [f"{c.get('name','?')}: {c.get('number','?')}" for c in matches[:10]]
-                return "\n".join(lines) if lines else f"No contacts matching '{q}'"
-            lines = [f"{c.get('name','?')}: {c.get('number','?')}" for c in contacts[:20]]
-            return f"{len(contacts)} contacts:\n" + "\n".join(lines)
-        except: return "No contacts"
+            return f"{len(contacts)} contacts"
 
-    # CALENDAR
-    if any(x in msg_lower for x in ["calendar","event","events","schedule","appointment"]):
-        r = subprocess.run(["termux-calendar-list"], capture_output=True, text=True, timeout=5)
-        try:
-            events = json.loads(r.stdout)
-            lines = [f"{e.get('eventMessage','?')} ({e.get('begin','?')})" for e in events[:10]]
-            return "\n".join(lines) if lines else "No events"
-        except: return "No events"
+        elif tool == "call_log":
+            r = subprocess.run(["termux-call-log", "-l", "5"], capture_output=True, text=True, timeout=5)
+            calls = json.loads(r.stdout)
+            return f"{len(calls)} recent calls"
 
-    # WIFI
-    if "wifi" in msg_lower:
-        if any(x in msg_lower for x in ["scan","networks","nearby"]):
-            r = subprocess.run(["termux-wifi-scaninfo"], capture_output=True, text=True, timeout=10)
-            try:
-                nets = json.loads(r.stdout)
-                lines = [f"{n.get('ssid','?')} ({n.get('frequency','?')}MHz)" for n in nets[:10]]
-                return "\n".join(lines) if lines else "No networks"
-            except: return "No networks"
-        elif any(x in msg_lower for x in ["on","enable"]):
-            subprocess.run(["termux-wifi-enable","on"], timeout=5); return "WiFi on"
-        elif any(x in msg_lower for x in ["off","disable"]):
-            subprocess.run(["termux-wifi-enable","off"], timeout=5); return "WiFi off"
-        else:
-            r = subprocess.run(["termux-wifi-connectioninfo"], capture_output=True, text=True, timeout=3)
-            try:
-                d = json.loads(r.stdout)
-                return f"WiFi: {d.get('ssid','?')} ({d.get('link_speed','?')}Mbps)"
-            except: return "N/A"
+        elif tool == "storage":
+            r = subprocess.run(["df", "-h", "/data"], capture_output=True, text=True, timeout=3)
+            lines = r.stdout.strip().split("\n")
+            return lines[1] if len(lines) > 1 else "N/A"
 
-    # BLUETOOTH
-    if any(x in msg_lower for x in ["bluetooth","bt "]):
-        if any(x in msg_lower for x in ["scan","discover","nearby","devices"]):
-            r = subprocess.run(["termux-bt-scan"], capture_output=True, text=True, timeout=15)
-            try:
-                devs = json.loads(r.stdout)
-                lines = [f"{d.get('name','?')} ({d.get('address','?')})" for d in devs[:10]]
-                return f"Found {len(devs)} devices:\n" + "\n".join(lines) if lines else "No devices"
-            except: return "No devices"
-        elif any(x in msg_lower for x in ["on","enable"]):
-            subprocess.run(["termux-bt-enable","on"], timeout=5); return "Bluetooth on"
-        elif any(x in msg_lower for x in ["off","disable"]):
-            subprocess.run(["termux-bt-enable","off"], timeout=5); return "Bluetooth off"
+        elif tool == "tts":
+            speak(args)
+            return f"Speaking: {args}"
 
-    # LOCATION
-    if any(x in msg_lower for x in ["location","where am i","gps","position","coordinates"]):
-        r = subprocess.run(["termux-location","-p","gps"], capture_output=True, text=True, timeout=10)
-        try:
-            d = json.loads(r.stdout)
-            lat = d.get("latitude","?"); lon = d.get("longitude","?")
-            return f"Location: {lat}, {lon}\nhttps://maps.google.com/?q={lat},{lon}"
-        except: return "N/A"
-
-    # CAMERA
-    if any(x in msg_lower for x in ["camera","photo","take picture","snap"]):
-        path = str(HOME / f"photo_{int(time.time())}.jpg")
-        subprocess.run(["termux-camera-photo",path], timeout=15)
-        return f"Photo saved: {path}" if os.path.exists(path) else "Camera failed"
-
-    # SCREENSHOT
-    if "screenshot" in msg_lower:
-        path = str(HOME / f"screen_{int(time.time())}.png")
-        subprocess.run(["termux-screenshot",path], timeout=5)
-        return f"Screenshot: {path}" if os.path.exists(path) else "Failed"
-
-    # CLIPBOARD
-    if any(x in msg_lower for x in ["clipboard","copy","paste","clip"]):
-        if any(x in msg_lower for x in ["copy ","set ","put "]):
-            text = msg_lower.split("copy")[-1].split("set")[-1].split("put")[-1].strip()
-            subprocess.run(["termux-clipboard-set",text], timeout=3)
-            return f"Copied: {text}"
-        else:
-            r = subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, timeout=3)
-            return f"Clipboard: {r.stdout.strip()}" if r.stdout.strip() else "Clipboard empty"
-
-    # NOTIFICATIONS
-    if any(x in msg_lower for x in ["notify","notification","alert"]):
-        m = msg_lower.replace("notify","").replace("notification","").replace("alert","").strip()
-        if m:
-            subprocess.run(["termux-notification","-t","BruceClaw","-c",m], timeout=3)
+        elif tool == "notify":
+            subprocess.run(["termux-notification", "-t", "BruceClaw", "-c", args], timeout=3)
             return "Notification sent"
-        return "What should the notification say?"
 
-    # TTS
-    if any(x in msg_lower for x in ["speak ","say ","tts ","voice ","read aloud ","read out "]):
-        text = ""
-        for sep in ["speak ","say ","tts ","voice ","read aloud ","read out "]:
-            if sep in msg_lower: text = msg_lower.split(sep, 1)[-1].strip(); break
-        if text:
-            speak(text)
-            return f"Speaking: {text}"
-        return "What should I say?"
+        elif tool == "shell":
+            r = subprocess.run(args, shell=True, capture_output=True, text=True, timeout=30)
+            return (r.stdout or r.stderr or "Done")[:200]
 
-    # VOLUME
-    if any(x in msg_lower for x in ["volume","sound","mute","unmute","loud","quiet"]):
-        if any(x in msg_lower for x in ["mute","silent","quiet","down"]):
-            subprocess.run(["termux-volume","music","0"], timeout=3); return "Volume muted"
-        elif any(x in msg_lower for x in ["unmute","loud","max","up"]):
-            subprocess.run(["termux-volume","music","15"], timeout=3); return "Volume maxed"
-
-    # BRIGHTNESS
-    if any(x in msg_lower for x in ["brightness","dim","bright","screen light"]):
-        if any(x in msg_lower for x in ["max","full","bright","100"]):
-            subprocess.run(["termux-brightness","255"], timeout=3); return "Brightness maxed"
-        elif any(x in msg_lower for x in ["min","low","dim","dark"]):
-            subprocess.run(["termux-brightness","10"], timeout=3); return "Brightness dimmed"
-        else:
-            subprocess.run(["termux-brightness","128"], timeout=3); return "Brightness 50%"
-
-    # VIBRATE
-    if any(x in msg_lower for x in ["vibrate","buzz","haptic"]):
-        ms = "2000" if "long" in msg_lower else "500"
-        subprocess.run(["termux-vibrate","-d",ms], timeout=5)
-        return f"Vibrating {ms}ms"
-
-    # STORAGE
-    if any(x in msg_lower for x in ["storage","space","disk","memory"]):
-        r = subprocess.run(["df","-h","/data"], capture_output=True, text=True, timeout=3)
-        lines = r.stdout.strip().split("\n")
-        return lines[1] if len(lines) > 1 else "N/A"
-
-    # OPEN APP
-    if any(x in msg_lower for x in ["open ","launch ","start app"]):
-        app = msg_lower.replace("open","").replace("launch","").replace("start app","").strip()
-        apps = {"whatsapp":"com.whatsapp","telegram":"org.telegram.messenger","chrome":"com.android.chrome",
-                "settings":"com.android.settings","camera":"com.android.camera","maps":"com.google.android.apps.maps",
-                "youtube":"com.google.android.youtube","calculator":"com.android.calculator2"}
-        pkg = None
-        for name, package in apps.items():
-            if name in app: pkg = package; break
-        if pkg:
+        elif tool == "open_app":
+            apps = {"whatsapp":"com.whatsapp","chrome":"com.android.chrome","settings":"com.android.settings"}
+            pkg = apps.get(args.lower(), args)
             subprocess.run(["monkey","-p",pkg,"-c","android.intent.category.LAUNCHER","1"], capture_output=True, timeout=5)
-            return f"Opening {app}..."
-        return f"Unknown app: {app}"
+            return f"Opening {args}..."
 
-    # WHATSAPP
-    if any(x in msg_lower for x in ["whatsapp ","whatsapp message","send whatsapp","message on whatsapp"]):
-        number = ""; text = "Hi"
-        for sep in ["to ","whatsapp ","message ","send "]:
-            if sep in msg_lower:
-                after = msg_lower.split(sep)[-1].strip()
-                parts = after.split(None, 1)
-                number = parts[0].replace(" ","").replace("-","").replace("+","").replace("whatsapp","")
-                if len(parts) > 1:
-                    raw = parts[1]
-                    for kw in ["say ","message ","and say ","and tell ","on whatsapp"]:
-                        raw = raw.replace(kw,"")
-                    text = raw.strip() or "Hi"
-                break
-        if not number:
-            nums = re.findall(r'0\d{9}', msg_lower)
-            if nums: number = nums[0]
-        if number:
-            url = f"https://wa.me/{number}?text={text.replace(' ','%20')}"
-            subprocess.run(["am","start","-a","android.intent.action.VIEW","-d",url], timeout=5)
-            return f"Opening WhatsApp to {number} with: {text}"
-        return "Give me a phone number and message"
+        elif tool == "wifi":
+            if args == "on":
+                subprocess.run(["termux-wifi-enable","on"], timeout=3); return "WiFi on"
+            elif args == "off":
+                subprocess.run(["termux-wifi-enable","off"], timeout=3); return "WiFi off"
+            r = subprocess.run(["termux-wifi-connectioninfo"], capture_output=True, text=True, timeout=3)
+            d = json.loads(r.stdout)
+            return f"WiFi: {d.get('ssid','?')}"
 
-    # LEARN
-    if any(x in msg_lower for x in ["learn this","remember this","add knowledge"]):
-        text = ""
-        for sep in ["learn this ","remember this ","add knowledge "]:
-            if sep in msg_lower: text = msg_lower.split(sep, 1)[-1].strip(); break
-        if text:
+        elif tool == "bluetooth":
+            if args == "on":
+                subprocess.run(["termux-bt-enable","on"], timeout=3); return "Bluetooth on"
+            elif args == "off":
+                subprocess.run(["termux-bt-enable","off"], timeout=3); return "Bluetooth off"
+            r = subprocess.run(["termux-bt-scan"], capture_output=True, text=True, timeout=15)
+            devs = json.loads(r.stdout)
+            return f"Found {len(devs)} devices"
+
+        elif tool == "screenshot":
+            path = str(HOME / f"screen_{int(time.time())}.png")
+            subprocess.run(["termux-screenshot", path], timeout=5)
+            return f"Screenshot: {path}" if os.path.exists(path) else "Failed"
+
+        elif tool == "learn":
             if "learned_facts" not in KB: KB["learned_facts"] = []
-            KB["learned_facts"].append({"fact": text, "added": datetime.now().strftime("%Y-%m-%d %H:%M")})
+            KB["learned_facts"].append({"fact": args, "added": datetime.now().strftime("%Y-%m-%d %H:%M")})
             with open(SCRIPT_DIR / "knowledge_base.json", "w") as f:
                 json.dump(KB, f, indent=2)
-            return f"Learned: {text}"
-        return "What should I learn?"
+            return f"Learned: {args}"
 
-    # HELP
-    if any(x in msg_lower for x in ["help","what can","tools","capabilities","functions"]):
-        return """I can do:
-Answering Machine: on/off/greeting/messages
-SMS: send/read
-Calls: dial/end/answer/call log
-Contacts: list/search
-Battery: check status
-WiFi: scan/on/off
-Bluetooth: scan/on/off
-Location: GPS
-Camera: take photo
-Screenshot
-Clipboard: copy/paste
-Notifications
-TTS: speak text
-Volume: up/down/mute
-Brightness: dim/bright
-Vibrate
-Storage: check space
-WhatsApp: send messages
-Open apps
-Files/Shell commands
-Calendar
-Learn: remember facts"""
+        elif tool == "volume":
+            if args == "mute": subprocess.run(["termux-volume","music","0"], timeout=3); return "Muted"
+            elif args == "up": subprocess.run(["termux-volume","music","15"], timeout=3); return "Volume up"
+            else: subprocess.run(["termux-volume","music","7"], timeout=3); return "Volume set"
 
-    return None  # Not a command
+        elif tool == "brightness":
+            if args == "max": subprocess.run(["termux-brightness","255"], timeout=3); return "Max brightness"
+            elif args == "min": subprocess.run(["termux-brightness","10"], timeout=3); return "Dim"
+            else: subprocess.run(["termux-brightness","128"], timeout=3); return "50%"
+
+        elif tool == "vibrate":
+            ms = "2000" if "long" in args else "500"
+            subprocess.run(["termux-vibrate","-d",ms], timeout=5)
+            return f"Vibrating {ms}ms"
+
+        else:
+            return f"Unknown tool: {tool}"
+    except Exception as e:
+        return f"Error: {e}"
+
+# System prompt for Mimo
+SYSTEM_PROMPT = f"""You are BruceClaw, Bruce Nigel's AI assistant. You control a phone through tools.
+
+WHEN USER ASKS TO DO SOMETHING ON THE PHONE, REPLY WITH EXACTLY THIS FORMAT:
+TOOL:tool_name:arguments
+
+AVAILABLE TOOLS:
+TOOL:answering_machine:on - enable call answering
+TOOL:answering_machine:off - disable call answering
+TOOL:send_sms:number,message - send SMS
+TOOL:make_call:number - dial a number
+TOOL:battery - check battery
+TOOL:camera - take photo
+TOOL:location - get GPS
+TOOL:contacts - list contacts
+TOOL:call_log - recent calls
+TOOL:storage - check storage
+TOOL:tts:text - speak text
+TOOL:notify:message - notification
+TOOL:shell:command - run command
+TOOL:open_app:name - open app
+TOOL:wifi:on/off - wifi control
+TOOL:bluetooth:on/off - bluetooth control
+TOOL:screenshot - take screenshot
+TOOL:learn:fact - remember something
+TOOL:volume:up/down/mute - volume
+TOOL:brightness:max/min - brightness
+TOOL:vibrate:long/short - vibrate
+
+WHEN USER JUST WANTS TO CHAT, respond normally without TOOL: prefix.
+Be friendly, concise, no emojis.
+"""
+
+def call_mimo(messages):
+    """Call Mimo via OpenCode Zen API"""
+    if not API_KEY:
+        return "No API key configured"
+    try:
+        payload = json.dumps({
+            "model": "mimo-v2.5",
+            "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+            "max_tokens": 300,
+            "temperature": 0.7
+        }).encode()
+        req = urllib.request.Request(
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Error: {e}"
 
 class FastServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
@@ -402,11 +256,29 @@ class H(http.server.BaseHTTPRequestHandler):
             add_history("user", msg)
             print(f"USER: {msg}")
 
-            tool_result = execute(msg)
-            if tool_result is not None:
-                result = tool_result
+            # Send to Mimo with tool knowledge
+            messages = [{"role": "user", "content": msg}]
+            mimo_response = call_mimo(messages)
+            print(f"MIMO: {mimo_response[:100]}")
+
+            # Check if Mimo wants a tool
+            if "TOOL:" in mimo_response:
+                import re
+                tool_match = re.search(r'TOOL:([^:\n]+):?([^\n]*)', mimo_response)
+                if tool_match:
+                    tool_name = tool_match.group(1).strip()
+                    tool_args = tool_match.group(2).strip()
+                    tool_result = run_tool(f"{tool_name}:{tool_args}")
+                    print(f"TOOL RESULT: {tool_result}")
+                    # Feed result back to Mimo
+                    messages.append({"role": "assistant", "content": mimo_response})
+                    messages.append({"role": "user", "content": f"Tool result: {tool_result}"})
+                    final = call_mimo(messages)
+                    result = final
+                else:
+                    result = mimo_response
             else:
-                result = "I can do: answering machine, SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, WhatsApp, files, calendar, and learn. What do you need?"
+                result = mimo_response
 
             add_history("assistant", result)
             print(f"REPLY: {result[:80]}")
@@ -436,158 +308,5 @@ class H(http.server.BaseHTTPRequestHandler):
 
 load_history()
 subprocess.run(["termux-wake-lock"], timeout=3)
-print(f"BruceClaw Bridge v9.2 at http://localhost:{PORT}")
-
-# ======== ANSWERING MACHINE - CALL DETECTION ========
-def handle_call(number="unknown"):
-    """Answer a call, greet caller, have conversation, take message"""
-    print(f"ANSWERING CALL from {number}")
-    try:
-        # Answer the call
-        subprocess.run(["input", "keyevent", "5"], timeout=5)
-        time.sleep(2)
-        
-        # Greet the caller
-        greeting = "Hello, this is Jessica, Bruce's assistant at Bruce Racing. Bruce is busy right now. How can I help you today?"
-        speak(greeting)
-        time.sleep(1)
-        
-        transcript = [f"Jessica: {greeting}"]
-        
-        # Have up to 5 rounds of conversation
-        for round_num in range(5):
-            # Record caller speaking (10 seconds)
-            audio_path = str(MESSAGES_DIR / f"call_{int(time.time())}_r{round_num}.wav")
-            print(f"Recording round {round_num + 1}...")
-            try:
-                proc = subprocess.Popen(
-                    ["termux-microphone-record", "-l", "10", "-f", "wav", audio_path],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                )
-                time.sleep(11)
-                try: proc.terminate()
-                except: pass
-            except: pass
-            
-            # Try to transcribe
-            caller_text = None
-            try:
-                import speech_recognition as sr
-                recognizer = sr.Recognizer()
-                if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-                    with sr.AudioFile(audio_path) as source:
-                        audio = recognizer.record(source)
-                    caller_text = recognizer.recognize_google(audio)
-            except:
-                pass
-            
-            if not caller_text:
-                if round_num == 0:
-                    response = "I'm sorry, I didn't catch that. Could you please repeat?"
-                else:
-                    response = "If you'd like to leave a message, please say your name, phone number, and what it's about. Otherwise, thank you for calling and have a great day."
-                    speak(response)
-                    transcript.append(f"Jessica: {response}")
-                    break
-            else:
-                print(f"Caller said: {caller_text}")
-                transcript.append(f"Caller: {caller_text}")
-                
-                # Generate response based on what caller said
-                caller_lower = caller_text.lower()
-                
-                # Check if caller is trying to give commands
-                command_words = ["run", "execute", "send sms", "call someone", "delete", "install"]
-                if any(w in caller_lower for w in command_words):
-                    response = "I can only take messages for Bruce. I cannot execute commands. Would you like to leave a message?"
-                elif any(x in caller_lower for x in ["who are you","your name","what are you"]):
-                    response = "I'm Jessica, Bruce's assistant at Bruce Racing workshop. Bruce is busy with a job right now. How can I help you?"
-                elif any(x in caller_lower for x in ["where","location","address"]):
-                    response = "Bruce Racing is at 767 Millagahawatte Road, Malabe. We're open Monday to Saturday, 8 AM to 6 PM."
-                elif any(x in caller_lower for x in ["price","cost","how much","rate"]):
-                    response = "For exact pricing, Bruce would need to inspect the vehicle first. The labour rate is Rs 6,500 per hour. Would you like to bring the vehicle in for an assessment?"
-                elif any(x in caller_lower for x in ["engine","transmission","overhaul","repair"]):
-                    response = "We specialize in engine overhauls, transmission repair, and diesel diagnostics. Bruce would need to inspect your vehicle to give you an accurate quote. Would you like to schedule a visit?"
-                elif any(x in caller_lower for x in ["message","leave a message","tell him","tell her"]):
-                    response = "Of course. Please leave your name, phone number, and what the message is about. I'll make sure Bruce gets it."
-                elif any(x in caller_lower for x in ["bye","goodbye","thank you","thanks"]):
-                    response = "Thank you for calling. Have a great day!"
-                    speak(response)
-                    transcript.append(f"Jessica: {response}")
-                    break
-                else:
-                    response = "I understand. Let me take a message for Bruce. What's your name and phone number, and what is this about?"
-                
-                speak(response)
-                transcript.append(f"Jessica: {response}")
-            
-            time.sleep(1)
-        
-        # End call
-        subprocess.run(["input", "keyevent", "6"], timeout=5)
-        
-        # Save the conversation
-        from datetime import datetime as dt
-        log_entry = {
-            "number": number,
-            "time": dt.now().strftime("%Y-%m-%d %H:%M"),
-            "transcript": "\n".join(transcript)
-        }
-        answering_machine["conversation_log"].append(log_entry)
-        answering_machine["messages"].append({
-            "number": number,
-            "time": dt.now().strftime("%Y-%m-%d %H:%M"),
-            "note": "AI conversation completed"
-        })
-        
-        # Notify Bruce
-        subprocess.run(["termux-notification","-t","BruceClaw","-c",f"Call from {number} answered - {len(transcript)} exchanges","--id","am-call"], timeout=3)
-        print(f"Call with {number} completed")
-        
-    except Exception as e:
-        print(f"Call handling error: {e}")
-
-def call_monitor():
-    """Background thread - monitors incoming calls"""
-    last_call_time = None
-    while True:
-        time.sleep(5)
-        if not answering_machine["enabled"]:
-            continue
-        try:
-            r = subprocess.run(["termux-call-log", "-l", "3"], capture_output=True, text=True, timeout=5)
-            if r.returncode != 0:
-                continue
-            calls = json.loads(r.stdout)
-            if not calls:
-                continue
-            for call in calls:
-                # Handle both dict and string formats
-                if isinstance(call, dict):
-                    call_time = call.get("date", "")
-                    call_number = call.get("number", "unknown")
-                    call_type = str(call.get("type", "")).lower()
-                elif isinstance(call, str):
-                    # String format - try to parse
-                    call_time = call[:19] if len(call) > 19 else call
-                    call_number = call.split()[-1] if call.split() else "unknown"
-                    call_type = call.lower()
-                else:
-                    continue
-                    
-                if call_time == last_call_time:
-                    break
-                if "incoming" in call_type or "1" in str(call_type):
-                    last_call_time = call_time
-                    print(f"INCOMING CALL from {call_number}")
-                    t = threading.Thread(target=handle_call, args=(call_number,), daemon=True)
-                    t.start()
-                    break
-        except Exception as e:
-            print(f"Monitor error: {e}")
-
-# Start call monitor
-monitor = threading.Thread(target=call_monitor, daemon=True)
-monitor.start()
-
+print(f"BruceClaw Bridge v10 at http://localhost:{PORT}")
 FastServer(("0.0.0.0",PORT),H).serve_forever()
