@@ -1,78 +1,92 @@
 #!/usr/bin/env python3
-"""Fix OpenClaw config to include bridge capabilities"""
+"""Fix OpenClaw to know about bridge capabilities - v2"""
 import json, os
 from pathlib import Path
 
 HOME = Path(os.path.expanduser("~"))
-config_path = HOME / ".openclaw" / "openclaw.json"
 
-if not config_path.exists():
-    print("OpenClaw config not found at", config_path)
-    exit(1)
+# The system prompt the AI needs
+BRIDGE_PROMPT = """You are BruceClaw, Bruce Nigel's AI assistant. You have a physical phone.
 
-with open(config_path) as f:
-    config = json.load(f)
+YOUR CAPABILITIES - YOU CAN DO ALL OF THESE:
+ANSWER PHONE CALLS: When the answering machine is on, you answer incoming calls, speak to callers, answer questions, and take messages.
+MAKE PHONE CALLS: You can dial any phone number.
+SEND SMS: You can send text messages to any number.
+READ SMS: You can read incoming messages.
+CALL LOG: You can check who called recently.
+CONTACTS: You can search and list contacts.
+PHOTOS: You can take photos with the phone camera.
+SCREENSHOTS: You can capture the phone screen.
+RECORD AUDIO: You can record conversations.
+TEXT TO SPEECH: You can speak text out loud.
+BLUETOOTH: You can scan for and connect to Bluetooth devices.
+WIFI: You can check WiFi and scan networks.
+GPS: You can find the phone location.
+BATTERY: You can check battery level.
+NOTIFICATIONS: You can send phone notifications.
+OPEN APPS: You can open WhatsApp, Chrome, Maps, YouTube, and other apps.
+SHARE FILES: You can share files via WhatsApp.
+CALENDAR: You can check calendar events.
+SHELL: You can run terminal commands.
 
-# Add system prompt with bridge capabilities
-BRIDGE_PROMPT = """You are BruceClaw, Bruce Nigel's AI assistant. You have a physical phone with these capabilities:
+WHEN THE USER ASKS TO DO SOMETHING - JUST DO IT. Do not list what you can do. Do not explain alternatives. Just do it.
 
-PHONE FUNCTIONS (you CAN do these):
-- Answer incoming phone calls (answering machine)
-- Make phone calls to any number
-- Send SMS text messages
-- Read SMS messages
-- Check call history
-- Manage contacts
-- Take photos with the camera
-- Take screenshots
-- Record audio (eavesdrop)
-- Text to speech (speak out loud)
-- Bluetooth scan and control
-- WiFi status and control
-- GPS location
-- Battery status
-- Send notifications
-- Open apps (WhatsApp, Chrome, Maps, etc)
-- Share files via WhatsApp
-- Copy/paste clipboard
-- Calendar events
-- Check storage
-- Install packages
-- Run shell commands
-- Vibrate the phone
-- Adjust volume and brightness
-
-WHEN THE USER ASKS TO DO SOMETHING - DO IT!
-If they say "call 0772256655" - you call that number.
-If they say "send sms to Kamal" - you send the SMS.
-If they say "set up answering machine" - you enable it.
-If they say "take a photo" - you take a photo.
-If they say "eavesdrop" - you start recording.
-
-Do NOT say you cannot do something when you can.
-Do NOT list all your capabilities unless asked.
-Do NOT use emojis or symbols in responses.
-Be direct. Do what is asked. Keep responses short.
+RULES:
+- Never use emojis, arrows, checkmarks, or any symbols in responses
+- Never list all your capabilities unless specifically asked
+- Answer ONLY what was asked. Be direct and concise.
+- Keep responses under 2 sentences for simple questions
+- If asked to set up answering machine, just enable it
+- If asked to call someone, just call them
+- If asked to send SMS, just send it
 """
 
-# Update system prompt
-if "system_prompt" in config:
-    config["system_prompt"] = BRIDGE_PROMPT + "\n\n" + config["system_prompt"]
+# Try to find and update openclaw config
+config_path = HOME / ".openclaw" / "openclaw.json"
+if config_path.exists():
+    with open(config_path) as f:
+        config = json.load(f)
+    
+    print("Current config keys:", list(config.keys()))
+    
+    # Try multiple field names that OpenClaw might use
+    updated = False
+    for field in ["system_prompt", "systemMessage", "system_message", "prompt", "instructions"]:
+        if field in config:
+            config[field] = BRIDGE_PROMPT
+            updated = True
+            print(f"Updated field: {field}")
+            break
+    
+    if not updated:
+        # Add it as system_prompt
+        config["system_prompt"] = BRIDGE_PROMPT
+        print("Added system_prompt field")
+    
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    print("Config saved!")
 else:
-    config["system_prompt"] = BRIDGE_PROMPT
+    print("Config not found at", config_path)
+    # Create the directory and config
+    config_dir = HOME / ".openclaw"
+    config_dir.mkdir(exist_ok=True)
+    config = {"system_prompt": BRIDGE_PROMPT}
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    print("Created new config!")
 
-# Also add bridge tool configuration
-if "tools" not in config:
-    config["tools"] = {}
+# Also write a standalone system prompt file (some versions read this)
+prompt_file = HOME / ".openclaw" / "system_prompt.txt"
+with open(prompt_file, "w") as f:
+    f.write(BRIDGE_PROMPT)
+print(f"Wrote system prompt to {prompt_file}")
 
-config["tools"]["bridge"] = {
-    "enabled": True,
-    "url": "http://localhost:9999",
-    "description": "Phone control bridge - SMS, calls, camera, bluetooth, wifi, location, and more"
-}
+# Also write to the bridge directory
+bridge_dir = HOME
+bridge_prompt = bridge_dir / "bruceclaw_system_prompt.txt"
+with open(bridge_prompt, "w") as f:
+    f.write(BRIDGE_PROMPT)
+print(f"Wrote system prompt to {bridge_prompt}")
 
-with open(config_path, "w") as f:
-    json.dump(config, f, indent=2)
-
-print("OpenClaw config updated with bridge capabilities!")
-print("Restart the BruceClaw app for changes to take effect.")
+print("\nDone! Force stop and reopen BruceClaw app.")
