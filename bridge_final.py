@@ -444,13 +444,31 @@ class FastServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            tools = ["sms","send_sms","read_sms","call","dial","end_call",
-                     "call_log","contacts","battery","wifi","bluetooth",
-                     "location","camera","screenshot","clipboard","notify",
-                     "tts","volume","brightness","vibrate","ringtone",
-                     "storage","install","files","shell","calendar",
-                     "open_app","wallpaper","media","screen",
-                     "answering_machine","voicemail","messages"]
+            # Return OpenAI-compatible function definitions
+            tools = [
+                {"type": "function", "function": {"name": "send_sms", "description": "Send an SMS text message to a phone number", "parameters": {"type": "object", "properties": {"number": {"type": "string", "description": "Phone number"}, "message": {"type": "string", "description": "Message to send"}}, "required": ["number", "message"]}}},
+                {"type": "function", "function": {"name": "read_sms", "description": "Read incoming SMS messages", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "description": "Number of messages to read"}}}}},
+                {"type": "function", "function": {"name": "make_call", "description": "Dial a phone number and make a call", "parameters": {"type": "object", "properties": {"number": {"type": "string", "description": "Phone number to call"}}, "required": ["number"]}}},
+                {"type": "function", "function": {"name": "answer_call", "description": "Answer an incoming phone call", "parameters": {"type": "object", "properties": {}}}},
+                {"type": "function", "function": {"name": "end_call", "description": "Hang up the current phone call", "parameters": {"type": "object", "properties": {}}}},
+                {"type": "function", "function": {"name": "call_log", "description": "Get recent call history", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "description": "Number of calls to show"}}}}},
+                {"type": "function", "function": {"name": "contacts", "description": "Search or list contacts", "parameters": {"type": "object", "properties": {"search": {"type": "string", "description": "Search query"}}}}},
+                {"type": "function", "function": {"name": "battery", "description": "Check battery status", "parameters": {"type": "object", "properties": {}}}},
+                {"type": "function", "function": {"name": "wifi", "description": "Check WiFi status or scan networks", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["status", "scan", "on", "off"]}}}},
+                {"type": "function", "function": {"name": "bluetooth", "description": "Bluetooth scan or control", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["scan", "on", "off", "info"]}}}},
+                {"type": "function", "function": {"name": "location", "description": "Get GPS location", "parameters": {"type": "object", "properties": {}}}},
+                {"type": "function", "function": {"name": "camera", "description": "Take a photo", "parameters": {"type": "object", "properties": {}}}},
+                {"type": "function", "function": {"name": "screenshot", "description": "Take a screenshot", "parameters": {"type": "object", "properties": {}}}},
+                {"type": "function", "function": {"name": "tts", "description": "Speak text out loud", "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "Text to speak"}}, "required": ["text"]}}},
+                {"type": "function", "function": {"name": "open_app", "description": "Open an app on the phone", "parameters": {"type": "object", "properties": {"app": {"type": "string", "description": "App name"}}, "required": ["app"]}}},
+                {"type": "function", "function": {"name": "share_whatsapp", "description": "Share a file via WhatsApp", "parameters": {"type": "object", "properties": {"file": {"type": "string", "description": "File path"}, "number": {"type": "string", "description": "Phone number"}}}},
+                {"type": "function", "function": {"name": "notify", "description": "Send a notification", "parameters": {"type": "object", "properties": {"message": {"type": "string", "description": "Notification text"}}, "required": ["message"]}}},
+                {"type": "function", "function": {"name": "volume", "description": "Control volume", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["up", "down", "mute", "max"]}}}},
+                {"type": "function", "function": {"name": "eavesdrop", "description": "Start or stop recording ambient audio", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "stop"]}}}},
+                {"type": "function", "function": {"name": "answering_machine", "description": "Enable or disable the AI answering machine", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["on", "off"]}}}},
+                {"type": "function", "function": {"name": "learn", "description": "Teach the AI a new fact", "parameters": {"type": "object", "properties": {"fact": {"type": "string", "description": "Fact to learn"}}, "required": ["fact"]}}},
+                {"type": "function", "function": {"name": "shell", "description": "Run a terminal command", "parameters": {"type": "object", "properties": {"command": {"type": "string", "description": "Command to run"}}, "required": ["command"]}}},
+            ]
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
