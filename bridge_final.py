@@ -134,6 +134,28 @@ eavesdrop = {
     "sessions": []
 }
 
+def detect_language(text):
+    """Detect if text is Sinhala, Tamil, or English"""
+    sinhala_count = sum(1 for c in text if '\u0D80' <= c <= '\u0DFF')
+    tamil_count = sum(1 for c in text if '\u0B80' <= c <= '\u0BFF')
+    total = len(text)
+    if total == 0:
+        return "en"
+    if sinhala_count / total > 0.3:
+        return "si"
+    if tamil_count / total > 0.3:
+        return "ta"
+    return "en"
+
+def speak(text):
+    """Clean text and speak it with auto-detected language"""
+    cleaned = clean_for_tts(text)
+    lang = detect_language(cleaned)
+    try:
+        subprocess.run(["termux-tts-speak", "-l", lang, cleaned], timeout=15)
+    except:
+        subprocess.run(["termux-tts-speak", cleaned], timeout=15)
+
 def clean_for_tts(text):
     """Clean text for natural TTS - remove symbols, format for speech"""
     import unicodedata
@@ -269,7 +291,7 @@ def handle_call(number="unknown"):
     time.sleep(2)
     # Play greeting
     greeting = clean_for_tts(answering_machine["greeting"])
-    subprocess.run(["termux-tts-speak", greeting], timeout=20)
+    speak(greeting)
     time.sleep(1)
     
     conversation = [{"role": "system", "content": get_system_prompt()}]
@@ -301,7 +323,7 @@ def handle_call(number="unknown"):
                 response = "I'm sorry, I didn't catch that. Could you please repeat what you said?"
             else:
                 response = "I didn't catch that. If you'd like to leave a message, please say your name, phone number, and what it's about. Otherwise, thank you for calling and have a great day."
-                subprocess.run(["termux-tts-speak", clean_for_tts(response)], timeout=15)
+                speak(response)
                 transcript.append(f"BruceClaw: {response}")
                 break
         else:
@@ -320,7 +342,7 @@ def handle_call(number="unknown"):
             clean_response = clean_for_tts(response)
             transcript.append(f"BruceClaw: {response}")
             print(f"BruceClaw: {response}")
-            subprocess.run(["termux-tts-speak", clean_response], timeout=15)
+            speak(response)
         
         time.sleep(1)
     
@@ -636,7 +658,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         text = msg.split(sep, 1)[-1].strip()
                         break
                 if text:
-                    subprocess.run(["termux-tts-speak",clean_for_tts(text)], timeout=10)
+                    speak(text)
                     result = f"Speaking: {text}"
                 else:
                     result = "What should I say?"
