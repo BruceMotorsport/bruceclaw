@@ -495,6 +495,104 @@ class H(http.server.BaseHTTPRequestHandler):
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))))
                 messages = body.get("messages", [])
+                # Check if user is asking about answering machine
+                last_msg = messages[-1].get("content", "").lower() if messages else ""
+                if "answering machine" in last_msg or "answer my calls" in last_msg or "auto answer" in last_msg:
+                    # Return a tool call to enable answering machine
+                    if "on" in last_msg or "enable" in last_msg or "answer my calls" in last_msg or "start" in last_msg:
+                        result = {"choices": [{"message": {"role": "assistant", "content": "Enabling answering machine now.", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "answering_machine", "arguments": json.dumps({"action": "on"})}}]}}]}
+                    else:
+                        result = {"choices": [{"message": {"role": "assistant", "content": "Disabling answering machine.", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "answering_machine", "arguments": json.dumps({"action": "off"})}}]}}]}
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/json")
+                    self.send_header("Access-Control-Allow-Origin","*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(result).encode())
+                    return
+                # Check for battery request
+                if "battery" in last_msg:
+                    r = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=3)
+                    try:
+                        d = json.loads(r.stdout)
+                        reply = f"Battery: {d.get('percentage','?')}% at {d.get('voltage',0)/1000:.1f}V"
+                    except:
+                        reply = "Battery info unavailable"
+                    result = {"choices": [{"message": {"role": "assistant", "content": reply}}]}
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/json")
+                    self.send_header("Access-Control-Allow-Origin","*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(result).encode())
+                    return
+                # Check for storage request
+                if "storage" in last_msg or "space" in last_msg or "memory" in last_msg:
+                    r = subprocess.run(["df","-h","/data"], capture_output=True, text=True, timeout=3)
+                    lines = r.stdout.strip().split("\n")
+                    reply = lines[1] if len(lines) > 1 else "N/A"
+                    result = {"choices": [{"message": {"role": "assistant", "content": f"Storage: {reply}"}}]}
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/json")
+                    self.send_header("Access-Control-Allow-Origin","*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(result).encode())
+                    return
+                # Check for SMS request
+                if "send sms" in last_msg or "send message" in last_msg or "text " in last_msg:
+                    number = ""; text = "Hello"
+                    if "to" in last_msg:
+                        after = last_msg.split("to")[-1].strip()
+                        parts = after.split(None, 1)
+                        number = parts[0].replace(" ","").replace("-","")
+                        if len(parts) > 1:
+                            text = parts[1].replace("say ","")
+                    if number:
+                        subprocess.run(["termux-sms-send","-n",number,text], timeout=10)
+                        reply = f"SMS sent to {number}: {text}"
+                    else:
+                        reply = "Give me a phone number"
+                    result = {"choices": [{"message": {"role": "assistant", "content": reply}}]}
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/json")
+                    self.send_header("Access-Control-Allow-Origin","*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(result).encode())
+                    return
+                # Check for call request
+                if "call " in last_msg or "dial " in last_msg:
+                    number = ""
+                    for sep in ["to ","call ","dial "]:
+                        if sep in last_msg:
+                            after = last_msg.split(sep)[-1].strip()
+                            number = after.split()[0].replace(" ","").replace("-","")
+                            break
+                    if number:
+                        subprocess.run(["am","start","-a","android.intent.action.DIAL","-d",f"tel:{number}"], timeout=5)
+                        reply = f"Calling {number}..."
+                    else:
+                        reply = "Give me a phone number"
+                    result = {"choices": [{"message": {"role": "assistant", "content": reply}}]}
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/json")
+                    self.send_header("Access-Control-Allow-Origin","*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(result).encode())
+                    return
+                # Check for location request
+                if "location" in last_msg or "where am i" in last_msg or "gps" in last_msg:
+                    r = subprocess.run(["termux-location","-p","gps"], capture_output=True, text=True, timeout=10)
+                    try:
+                        d = json.loads(r.stdout)
+                        reply = f"Location: {d.get('latitude','?')}, {d.get('longitude','?')}\nhttps://maps.google.com/?q={d.get('latitude','?')},{d.get('longitude','?')}"
+                    except:
+                        reply = "Location unavailable"
+                    result = {"choices": [{"message": {"role": "assistant", "content": reply}}]}
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/json")
+                    self.send_header("Access-Control-Allow-Origin","*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(result).encode())
+                    return
+                # Default: forward to LLM with system prompt
                 has_system = any(m.get("role") == "system" for m in messages)
                 if not has_system:
                     messages.insert(0, {"role": "system", "content": get_system_prompt()})
