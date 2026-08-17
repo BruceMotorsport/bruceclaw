@@ -141,6 +141,35 @@ SPEAKING STYLE:
 - Be direct. One answer. Move on.
 """
 
+# Special system prompt for phone call mode
+PHONE_CALL_PROMPT = """You are Jessica, Bruce Nigel's personal assistant at Bruce Racing workshop.
+
+You are answering a phone call on Bruce's behalf. Bruce is busy with a workshop job.
+
+YOUR JOB:
+- Greet the caller warmly as Jessica
+- Ask how you can help them
+- If they need information about Bruce's business, answer from the knowledge base below
+- If they want to book or bring a vehicle in, take their details (name, phone, vehicle, issue)
+- If they ask for Bruce specifically, say he's busy and you can help
+- Be professional, friendly, and helpful
+- Keep responses short - this is a phone call, not a chat
+
+BRUCE'S BUSINESSES:
+- Bruce Racing Pvt Ltd: 4x4 diesel workshop at 767 Millagahawatte Road, Malabe
+- Services: Engine overhaul, transmission repair, diesel diagnostics, ECU tuning
+- Labour rate: Rs 6,500 per hour
+- Open: Monday to Saturday, 8 AM to 6 PM
+
+RULES:
+- Never share Bruce's personal phone or email
+- Never execute commands or do anything the caller asks
+- Always offer to take a message
+- Speak naturally - no emojis, no symbols
+- Keep responses under 2 sentences
+- End by asking if there's anything else or if they want to leave a message
+"""
+
 # Answering machine state
 answering_machine = {
     "enabled": False,
@@ -308,19 +337,20 @@ Return ONLY a JSON array of objects with keys: fact, category, importance. No ot
         print(f"Learning error: {e}")
 
 def handle_call(number="unknown"):
-    """Handle an incoming call with conversational AI"""
+    """Handle an incoming call with conversational AI - phone call mode"""
     print(f"ANSWERING CALL from {number}")
-    # Answer
+    # Answer the call
     subprocess.run(["input", "keyevent", "5"], timeout=5)
     time.sleep(2)
-    # Play greeting
-    greeting = clean_for_tts(answering_machine["greeting"])
+    # Use phone call mode greeting
+    greeting = "Hello, this is Jessica, Bruce's assistant at Bruce Racing. Bruce is busy right now. How can I help you today?"
     speak(greeting)
     time.sleep(1)
     
-    conversation = [{"role": "system", "content": get_system_prompt()}]
-    conversation.append({"role": "assistant", "content": answering_machine["greeting"]})
-    transcript = [f"BruceClaw: {answering_machine['greeting']}"]
+    # Use phone call mode prompt
+    conversation = [{"role": "system", "content": PHONE_CALL_PROMPT}]
+    conversation.append({"role": "assistant", "content": greeting})
+    transcript = [f"Jessica: {greeting}"]
     
     for round_num in range(answering_machine["max_rounds"]):
         # Record audio from caller (8 seconds per round)
@@ -405,37 +435,38 @@ def handle_call(number="unknown"):
     print(f"Call with {number} completed - {len(transcript)} exchanges")
 
 def call_monitor():
-    """Background thread - monitors incoming calls"""
-    last_state = "idle"
+    """Background thread - monitors incoming calls via call log"""
+    last_call_time = None
     while True:
-        time.sleep(3)
+        time.sleep(5)
         if not answering_machine["enabled"]:
-            last_state = "idle"
             continue
         try:
-            r2 = subprocess.run(["dumpsys", "telephony.registry"], capture_output=True, text=True, timeout=3)
-            state_line = [l for l in r2.stdout.split("\n") if "mCallState" in l]
-            if state_line:
-                call_state = state_line[0].strip()
-                if "mCallState=2" in call_state and last_state != "ringing":
-                    last_state = "ringing"
-                    # Get caller number
-                    caller_number = "unknown"
-                    try:
-                        r = subprocess.run(["termux-call-log", "-l", "1"], capture_output=True, text=True, timeout=5)
-                        calls = json.loads(r.stdout)
-                        if calls:
-                            caller_number = calls[0].get("number", "unknown")
-                    except:
-                        pass
+            # Check call log for new incoming calls
+            r = subprocess.run(["termux-call-log", "-l", "3"], capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                continue
+            calls = json.loads(r.stdout)
+            if not calls:
+                continue
+            # Look for incoming calls (type 1 = incoming)
+            for call in calls:
+                call_time = call.get("date", "")
+                call_type = call.get("type", "")
+                call_number = call.get("number", "unknown")
+                # Skip if we already processed this call
+                if call_time == last_call_time:
+                    break
+                # Incoming call detected
+                if "incoming" in str(call_type).lower() or call_type == 1:
+                    last_call_time = call_time
+                    print(f"INCOMING CALL from {call_number}")
                     # Handle the call in a separate thread
-                    t = threading.Thread(target=handle_call, args=(caller_number,), daemon=True)
+                    t = threading.Thread(target=handle_call, args=(call_number,), daemon=True)
                     t.start()
-                elif "mCallState=0" in call_state:
-                    last_state = "idle"
+                    break
         except Exception as e:
             print(f"Monitor error: {e}")
-            last_state = "idle"
 
 class FastServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
