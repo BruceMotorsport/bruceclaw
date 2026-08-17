@@ -12,8 +12,32 @@ SCRIPT_DIR = Path(__file__).parent
 
 # API config
 API_BASE = "https://opencode.ai/zen/go/v1"
-API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
 MODEL = "mimo-v2.5"
+
+# Try to load API key from config file or environment
+API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
+if not API_KEY:
+    config_path = HOME / ".bruceclaw_config.json"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+                API_KEY = config.get("api_key", "")
+        except:
+            pass
+    # Also try OpenClaw config
+    openclaw_config = HOME / ".openclaw" / "openclaw.json"
+    if not API_KEY and openclaw_config.exists():
+        try:
+            with open(openclaw_config) as f:
+                config = json.load(f)
+                providers = config.get("providers", {})
+                for p in providers.values():
+                    if "key" in p:
+                        API_KEY = p["key"]
+                        break
+        except:
+            pass
 
 # Load knowledge base
 KB = {}
@@ -1232,7 +1256,29 @@ eavesdrop history - past recordings
 eavesdrop status - recording status"""
 
             else:
-                result = "I can do: SMS, calls, contacts, battery, WiFi, Bluetooth, location, camera, screenshot, clipboard, notifications, TTS, volume, brightness, vibrate, storage, apps, WhatsApp, files, calendar, and AI answering machine. What do you need?"
+                # Send to LLM with full capabilities
+                try:
+                    import urllib.request
+                    conversation = [
+                        {"role": "system", "content": get_system_prompt()},
+                        {"role": "user", "content": body.get("message", msg)}
+                    ]
+                    payload = json.dumps({
+                        "model": MODEL,
+                        "messages": conversation,
+                        "max_tokens": 300,
+                        "temperature": 0.7
+                    }).encode()
+                    req = urllib.request.Request(
+                        f"{API_BASE}/chat/completions",
+                        data=payload,
+                        headers={"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = json.loads(resp.read())
+                        result = data["choices"][0]["message"]["content"]
+                except Exception as e:
+                    result = f"I can help with calls, SMS, contacts, battery, WiFi, Bluetooth, location, camera, WhatsApp, and more. What do you need?"
 
             print(f"RES: {result[:80]}")
             self.send_response(200)
