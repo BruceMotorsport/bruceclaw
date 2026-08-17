@@ -1356,6 +1356,6 @@ eavesdrop status - recording status"""
 monitor = threading.Thread(target=call_monitor, daemon=True)
 monitor.start()
 
-print(f"BruceClaw Bridge v6 at http://localhost:{PORT}")
+print(f"BruceClaw Bridge v7.3 at http://localhost:{PORT}")
 print("Answering machine ready. Say 'answering machine on' to enable.")
 FastServer(("0.0.0.0",PORT),H).serve_forever()
