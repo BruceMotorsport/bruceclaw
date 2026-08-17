@@ -459,6 +459,53 @@ class H(http.server.BaseHTTPRequestHandler):
         except: pass
 
     def do_POST(self):
+        # Handle OpenAI-compatible /v1/chat/completions (LLM proxy)
+        if self.path.startswith("/v1/chat/completions"):
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))))
+                messages = body.get("messages", [])
+                has_system = any(m.get("role") == "system" for m in messages)
+                if not has_system:
+                    messages.insert(0, {"role": "system", "content": get_system_prompt()})
+                else:
+                    for i, m in enumerate(messages):
+                        if m.get("role") == "system":
+                            messages[i] = {"role": "system", "content": get_system_prompt()}
+                            break
+                payload = json.dumps({**body, "messages": messages}).encode()
+                req = urllib.request.Request(
+                    f"{API_BASE}/chat/completions",
+                    data=payload,
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    result = json.loads(resp.read())
+                self.send_response(200)
+                self.send_header("Content-Type","application/json")
+                self.send_header("Access-Control-Allow-Origin","*")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+            except Exception as e:
+                print(f"LLM proxy error: {e}")
+                self.send_response(500)
+                self.send_header("Content-Type","application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        # Handle /v1/models endpoint
+        if self.path.startswith("/v1/models"):
+            try:
+                result = {"data": [{"id": MODEL, "object": "model", "owned_by": "bruceclaw"}]}
+                self.send_response(200)
+                self.send_header("Content-Type","application/json")
+                self.send_header("Access-Control-Allow-Origin","*")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+            except: pass
+            return
+
+        # Original bridge POST handler for tool commands
         result = ""
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))))
@@ -1304,9 +1351,6 @@ eavesdrop status - recording status"""
         self.end_headers()
 
     def log_message(self,*a): pass
-
-# Keep phone alive
-subprocess.run(["termux-wake-lock"], timeout=3)
 
 # Start call monitor thread
 monitor = threading.Thread(target=call_monitor, daemon=True)
