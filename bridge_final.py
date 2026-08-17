@@ -436,5 +436,148 @@ class H(http.server.BaseHTTPRequestHandler):
 
 load_history()
 subprocess.run(["termux-wake-lock"], timeout=3)
-print(f"BruceClaw Bridge v9.1 at http://localhost:{PORT}")
+print(f"BruceClaw Bridge v9.2 at http://localhost:{PORT}")
+
+# ======== ANSWERING MACHINE - CALL DETECTION ========
+def handle_call(number="unknown"):
+    """Answer a call, greet caller, have conversation, take message"""
+    print(f"ANSWERING CALL from {number}")
+    try:
+        # Answer the call
+        subprocess.run(["input", "keyevent", "5"], timeout=5)
+        time.sleep(2)
+        
+        # Greet the caller
+        greeting = "Hello, this is Jessica, Bruce's assistant at Bruce Racing. Bruce is busy right now. How can I help you today?"
+        speak(greeting)
+        time.sleep(1)
+        
+        transcript = [f"Jessica: {greeting}"]
+        
+        # Have up to 5 rounds of conversation
+        for round_num in range(5):
+            # Record caller speaking (10 seconds)
+            audio_path = str(MESSAGES_DIR / f"call_{int(time.time())}_r{round_num}.wav")
+            print(f"Recording round {round_num + 1}...")
+            try:
+                proc = subprocess.Popen(
+                    ["termux-microphone-record", "-l", "10", "-f", "wav", audio_path],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                time.sleep(11)
+                try: proc.terminate()
+                except: pass
+            except: pass
+            
+            # Try to transcribe
+            caller_text = None
+            try:
+                import speech_recognition as sr
+                recognizer = sr.Recognizer()
+                if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
+                    with sr.AudioFile(audio_path) as source:
+                        audio = recognizer.record(source)
+                    caller_text = recognizer.recognize_google(audio)
+            except:
+                pass
+            
+            if not caller_text:
+                if round_num == 0:
+                    response = "I'm sorry, I didn't catch that. Could you please repeat?"
+                else:
+                    response = "If you'd like to leave a message, please say your name, phone number, and what it's about. Otherwise, thank you for calling and have a great day."
+                    speak(response)
+                    transcript.append(f"Jessica: {response}")
+                    break
+            else:
+                print(f"Caller said: {caller_text}")
+                transcript.append(f"Caller: {caller_text}")
+                
+                # Generate response based on what caller said
+                caller_lower = caller_text.lower()
+                
+                # Check if caller is trying to give commands
+                command_words = ["run", "execute", "send sms", "call someone", "delete", "install"]
+                if any(w in caller_lower for w in command_words):
+                    response = "I can only take messages for Bruce. I cannot execute commands. Would you like to leave a message?"
+                elif any(x in caller_lower for x in ["who are you","your name","what are you"]):
+                    response = "I'm Jessica, Bruce's assistant at Bruce Racing workshop. Bruce is busy with a job right now. How can I help you?"
+                elif any(x in caller_lower for x in ["where","location","address"]):
+                    response = "Bruce Racing is at 767 Millagahawatte Road, Malabe. We're open Monday to Saturday, 8 AM to 6 PM."
+                elif any(x in caller_lower for x in ["price","cost","how much","rate"]):
+                    response = "For exact pricing, Bruce would need to inspect the vehicle first. The labour rate is Rs 6,500 per hour. Would you like to bring the vehicle in for an assessment?"
+                elif any(x in caller_lower for x in ["engine","transmission","overhaul","repair"]):
+                    response = "We specialize in engine overhauls, transmission repair, and diesel diagnostics. Bruce would need to inspect your vehicle to give you an accurate quote. Would you like to schedule a visit?"
+                elif any(x in caller_lower for x in ["message","leave a message","tell him","tell her"]):
+                    response = "Of course. Please leave your name, phone number, and what the message is about. I'll make sure Bruce gets it."
+                elif any(x in caller_lower for x in ["bye","goodbye","thank you","thanks"]):
+                    response = "Thank you for calling. Have a great day!"
+                    speak(response)
+                    transcript.append(f"Jessica: {response}")
+                    break
+                else:
+                    response = "I understand. Let me take a message for Bruce. What's your name and phone number, and what is this about?"
+                
+                speak(response)
+                transcript.append(f"Jessica: {response}")
+            
+            time.sleep(1)
+        
+        # End call
+        subprocess.run(["input", "keyevent", "6"], timeout=5)
+        
+        # Save the conversation
+        from datetime import datetime as dt
+        log_entry = {
+            "number": number,
+            "time": dt.now().strftime("%Y-%m-%d %H:%M"),
+            "transcript": "\n".join(transcript)
+        }
+        answering_machine["conversation_log"].append(log_entry)
+        answering_machine["messages"].append({
+            "number": number,
+            "time": dt.now().strftime("%Y-%m-%d %H:%M"),
+            "note": "AI conversation completed"
+        })
+        
+        # Notify Bruce
+        subprocess.run(["termux-notification","-t","BruceClaw","-c",f"Call from {number} answered - {len(transcript)} exchanges","--id","am-call"], timeout=3)
+        print(f"Call with {number} completed")
+        
+    except Exception as e:
+        print(f"Call handling error: {e}")
+
+def call_monitor():
+    """Background thread - monitors incoming calls"""
+    last_call_time = None
+    while True:
+        time.sleep(5)
+        if not answering_machine["enabled"]:
+            continue
+        try:
+            r = subprocess.run(["termux-call-log", "-l", "3"], capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                continue
+            calls = json.loads(r.stdout)
+            if not calls:
+                continue
+            for call in calls:
+                call_time = call.get("date", "")
+                call_number = call.get("number", "unknown")
+                call_type = str(call.get("type", "")).lower()
+                if call_time == last_call_time:
+                    break
+                if "incoming" in call_type or call_type == "1":
+                    last_call_time = call_time
+                    print(f"INCOMING CALL from {call_number}")
+                    t = threading.Thread(target=handle_call, args=(call_number,), daemon=True)
+                    t.start()
+                    break
+        except Exception as e:
+            print(f"Monitor error: {e}")
+
+# Start call monitor
+monitor = threading.Thread(target=call_monitor, daemon=True)
+monitor.start()
+
 FastServer(("0.0.0.0",PORT),H).serve_forever()
