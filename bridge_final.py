@@ -239,6 +239,22 @@ class FastServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         try:
+            # Serve chat UI at /chat
+            if self.path == "/chat" or self.path == "/chat.html":
+                chat_path = SCRIPT_DIR / "chat.html"
+                if chat_path.exists():
+                    with open(chat_path, "rb") as f:
+                        content = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type","text/html")
+                    self.send_header("Access-Control-Allow-Origin","*")
+                    self.end_headers()
+                    self.wfile.write(content)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                return
+            
             tools_path = SCRIPT_DIR / "tools.json"
             tools = json.load(open(tools_path)) if tools_path.exists() else []
             self.send_response(200)
